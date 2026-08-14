@@ -1,7 +1,15 @@
 // EyeFlow Windows Native Background Desktop Application & Scheduler Daemon
-const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, powerMonitor, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, powerMonitor, nativeImage, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+
+// Global Uncaught Exception & Promise Rejection Handlers
+process.on('uncaughtException', (err) => {
+  console.error('[EyeFlow UncaughtException]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[EyeFlow UnhandledRejection]', reason);
+});
 
 // Path to user config persistence in AppData
 const userDataPath = app.getPath('userData');
@@ -36,6 +44,21 @@ const DEFAULT_CONFIG = {
   },
 };
 
+// Deep merge helper to prevent nested config loss
+function deepMerge(target, source) {
+  const output = { ...target };
+  if (source && typeof source === 'object') {
+    for (const key of Object.keys(source)) {
+      if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+        output[key] = deepMerge(target[key] || {}, source[key]);
+      } else if (source[key] !== undefined) {
+        output[key] = source[key];
+      }
+    }
+  }
+  return output;
+}
+
 // State Manager
 class ConfigStore {
   constructor() {
@@ -46,7 +69,7 @@ class ConfigStore {
     try {
       if (fs.existsSync(configFilePath)) {
         const raw = fs.readFileSync(configFilePath, 'utf8');
-        return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+        return deepMerge(DEFAULT_CONFIG, JSON.parse(raw));
       }
     } catch (err) {
       console.error('[ConfigStore] Failed to load config:', err);
@@ -55,7 +78,7 @@ class ConfigStore {
   }
 
   save(newConfig) {
-    this.config = { ...this.config, ...newConfig };
+    this.config = deepMerge(this.config, newConfig);
     try {
       fs.writeFileSync(configFilePath, JSON.stringify(this.config, null, 2), 'utf8');
     } catch (err) {
@@ -66,13 +89,31 @@ class ConfigStore {
 
 const configStore = new ConfigStore();
 
-// Helper to load bundled HTML reliably in source and packaged ASAR
+// Diagnostic CLI Support: EyeFlow.exe --diagnostic
+if (process.argv.includes('--diagnostic') || process.argv.includes('-d')) {
+  console.log('====================================');
+  console.log('   EyeFlow Startup Diagnostic Log   ');
+  console.log('====================================');
+  console.log('App Path:', app.getAppPath());
+  console.log('User Data Path:', userDataPath);
+  console.log('Is Packaged:', app.isPackaged);
+  console.log('Resources Path:', process.resourcesPath);
+  console.log('Config File:', configFilePath);
+  console.log('Config State:', JSON.stringify(configStore.config, null, 2));
+  console.log('====================================');
+}
+
+// Helper to load bundled HTML reliably in both source and packaged ASAR
 function loadAppFile(targetWindow) {
   const primaryDist = path.join(__dirname, '..', 'dist', 'index.html');
   targetWindow.loadFile(primaryDist).catch(() => {
     const fallbackPath = path.join(app.getAppPath(), 'dist', 'index.html');
     targetWindow.loadFile(fallbackPath).catch((err) => {
-      console.error('[EyeFlow Loader] Failed to load index.html:', err);
+      console.error('[EyeFlow Loader] Failed to load index.html from all paths:', err);
+      dialog.showErrorBox(
+        'EyeFlow Resource Error',
+        'EyeFlow could not load its application resources. Please restart the application.'
+      );
     });
   });
 }
@@ -87,6 +128,20 @@ class NativeBackgroundScheduler {
     this.firedSlots = new Set();
     this.todayCompletedWater = [];
     this.todayCompletedScreen = [];
+    this.lastActiveDay = new Date().toISOString().split('T')[0];
+
+    // Midnight rollover monitor
+    setInterval(() => {
+      const currentDay = new Date().toISOString().split('T')[0];
+      if (this.lastActiveDay && this.lastActiveDay !== currentDay) {
+        console.log('[Native Scheduler] Date rolled over at midnight. Resetting daily slots.');
+        this.firedSlots.clear();
+        this.todayCompletedWater = [];
+        this.todayCompletedScreen = [];
+        this.lastActiveDay = currentDay;
+        this.reschedule();
+      }
+    }, 60000);
   }
 
   // Pure dynamic occurrence generator derived from device Date.now()
@@ -255,7 +310,9 @@ class NativeBackgroundScheduler {
 
   // Fires real background reminder: Native Notification + Native Reminder Window
   triggerRealReminder(category, occurrence) {
-    const slotId = `${category}-${occurrence.timeString}`;
+    const todayIso = new Date(occurrence.timestamp).toISOString().split('T')[0];
+    const slotId = `${category}:${todayIso}:${occurrence.timeString}`;
+
     if (this.firedSlots.has(slotId)) return;
     this.firedSlots.add(slotId);
 
@@ -263,24 +320,32 @@ class NativeBackgroundScheduler {
 
     if (category === 'water') {
       // 1. Native Windows Notification
-      if (Notification.isSupported()) {
-        new Notification({
-          title: '💧 WATER BREAK',
-          body: 'Time to drink some water. Take a short break.',
-          silent: false,
-        }).show();
+      try {
+        if (Notification.isSupported()) {
+          new Notification({
+            title: '💧 WATER BREAK',
+            body: 'Time to drink some water. Take a short break.',
+            silent: false,
+          }).show();
+        }
+      } catch (err) {
+        console.warn('[Notification] Failed to show water notification:', err);
       }
 
       // 2. Open Native Water Overlay
       openNativeWaterPopup((cfg.water.durationMinutes || 2) * 60);
     } else {
       // 1. Native Windows Notification
-      if (Notification.isSupported()) {
-        new Notification({
-          title: '👀 LOOK OUTSIDE',
-          body: 'Give your eyes a short break. Look away from the screen.',
-          silent: false,
-        }).show();
+      try {
+        if (Notification.isSupported()) {
+          new Notification({
+            title: '👀 LOOK OUTSIDE',
+            body: 'Give your eyes a short break. Look away from the screen.',
+            silent: false,
+          }).show();
+        }
+      } catch (err) {
+        console.warn('[Notification] Failed to show screen break notification:', err);
       }
 
       // 2. Open Native Full-Screen Reminder Window
@@ -332,10 +397,6 @@ function createMainWindow() {
 
   mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription) => {
     console.error('[MainWindow] Failed to load index.html:', errorCode, errorDescription);
-  });
-
-  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
-    console.log(`[Renderer Log L${level}] ${message} (${sourceId}:${line})`);
   });
 
   // CRITICAL REQUIREMENT: Closing main window hides to tray instead of exiting
@@ -612,7 +673,7 @@ function setupIpcHandlers() {
   });
 
   ipcMain.handle('minimizeToTray', () => {
-    if (mainWindow) mainWindow.hide();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
     return { success: true };
   });
 
