@@ -303,7 +303,8 @@ function createMainWindow() {
     minWidth: 700,
     minHeight: 550,
     title: 'EyeFlow',
-    show: false,
+    show: true,
+    backgroundColor: '#090d16',
     frame: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -312,18 +313,20 @@ function createMainWindow() {
     },
   });
 
-  // Load production dist bundle or localhost dev server
-  const devUrl = 'http://localhost:9966';
-  const distPath = path.join(__dirname, '..', 'dist', 'index.html');
+  // Resolve production dist path across both source and packaged app layouts
+  const primaryDist = path.join(__dirname, '..', 'dist', 'index.html');
+  const appPathDist = path.join(app.getAppPath(), 'dist', 'index.html');
 
-  if (fs.existsSync(distPath)) {
-    mainWindow.loadFile(distPath);
+  if (fs.existsSync(primaryDist)) {
+    mainWindow.loadFile(primaryDist);
+  } else if (fs.existsSync(appPathDist)) {
+    mainWindow.loadFile(appPathDist);
   } else {
-    mainWindow.loadURL(devUrl);
+    mainWindow.loadURL('http://localhost:9966');
   }
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+  mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription) => {
+    console.error('[MainWindow] Failed to load index.html:', errorCode, errorDescription);
   });
 
   // CRITICAL REQUIREMENT: Closing main window hides to tray instead of exiting
