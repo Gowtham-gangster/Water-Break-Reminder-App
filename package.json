@@ -1,0 +1,91 @@
+{
+  "name": "eyeflow",
+  "productName": "EyeFlow",
+  "version": "1.0.0",
+  "description": "Digital wellness desktop application for hydration and healthy screen breaks.",
+  "author": "EyeFlow Team",
+  "main": "desktop/main.cjs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "desktop": "electron desktop/main.cjs",
+    "desktop:dev": "tsc -b && vite build && electron desktop/main.cjs",
+    "package:win": "tsc -b && vite build && electron-builder --win --dir",
+    "build:windows": "tsc -b && vite build && electron-builder --win",
+    "release": "tsc -b && vite build && electron-builder --win nsis",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "build": {
+    "appId": "com.eyeflow.desktop",
+    "productName": "EyeFlow",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "desktop/**/*",
+      "public/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "desktop/trayIcon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "EyeFlow",
+      "uninstallDisplayName": "EyeFlow Digital Wellness",
+      "artifactName": "EyeFlow-Setup-${version}.${ext}"
+    }
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-notification": "^2.3.3",
+    "clsx": "^2.1.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "idb": "^8.0.3",
+    "lucide-react": "^1.31.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "recharts": "^3.10.1",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
+    "oxlint": "^1.75.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0"
+  }
+}
