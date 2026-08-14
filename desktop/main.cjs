@@ -66,6 +66,17 @@ class ConfigStore {
 
 const configStore = new ConfigStore();
 
+// Helper to load bundled HTML reliably in source and packaged ASAR
+function loadAppFile(targetWindow) {
+  const primaryDist = path.join(__dirname, '..', 'dist', 'index.html');
+  targetWindow.loadFile(primaryDist).catch(() => {
+    const fallbackPath = path.join(app.getAppPath(), 'dist', 'index.html');
+    targetWindow.loadFile(fallbackPath).catch((err) => {
+      console.error('[EyeFlow Loader] Failed to load index.html:', err);
+    });
+  });
+}
+
 // ========================================================
 // 1. NATIVE BACKGROUND SCHEDULER ENGINE (ZERO CPU IDLE)
 // ========================================================
@@ -183,7 +194,7 @@ class NativeBackgroundScheduler {
       return;
     }
 
-    // 1. Water Reminder Scheduling
+    // 1. Water Reminder Scheduling (Only arm future timers)
     let nextWater = null;
     if (cfg.water.enabled) {
       nextWater = this.findNextOccurrence(
@@ -203,7 +214,7 @@ class NativeBackgroundScheduler {
       }
     }
 
-    // 2. Look Outside Screen Break Scheduling
+    // 2. Look Outside Screen Break Scheduling (Only arm future timers)
     let nextScreen = null;
     if (cfg.screen.enabled) {
       nextScreen = this.findNextOccurrence(
@@ -317,20 +328,14 @@ function createMainWindow() {
     },
   });
 
-  // Resolve production dist path across both source and packaged app layouts
-  const primaryDist = path.join(__dirname, '..', 'dist', 'index.html');
-  const appPathDist = path.join(app.getAppPath(), 'dist', 'index.html');
-
-  if (fs.existsSync(primaryDist)) {
-    mainWindow.loadFile(primaryDist);
-  } else if (fs.existsSync(appPathDist)) {
-    mainWindow.loadFile(appPathDist);
-  } else {
-    mainWindow.loadURL('http://localhost:9966');
-  }
+  loadAppFile(mainWindow);
 
   mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription) => {
     console.error('[MainWindow] Failed to load index.html:', errorCode, errorDescription);
+  });
+
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    console.log(`[Renderer Log L${level}] ${message} (${sourceId}:${line})`);
   });
 
   // CRITICAL REQUIREMENT: Closing main window hides to tray instead of exiting
@@ -364,12 +369,7 @@ function openNativeScreenBreakWindow(durationSeconds) {
     },
   });
 
-  const distPath = path.join(__dirname, '..', 'dist', 'index.html');
-  if (fs.existsSync(distPath)) {
-    reminderWindow.loadFile(distPath);
-  } else {
-    reminderWindow.loadURL('http://localhost:9966');
-  }
+  loadAppFile(reminderWindow);
 
   reminderWindow.webContents.once('did-finish-load', () => {
     reminderWindow.webContents.send('reminder-triggered', {
@@ -409,12 +409,7 @@ function openNativeWaterPopup(durationSeconds) {
     },
   });
 
-  const distPath = path.join(__dirname, '..', 'dist', 'index.html');
-  if (fs.existsSync(distPath)) {
-    waterPopupWindow.loadFile(distPath);
-  } else {
-    waterPopupWindow.loadURL('http://localhost:9966');
-  }
+  loadAppFile(waterPopupWindow);
 
   waterPopupWindow.webContents.once('did-finish-load', () => {
     waterPopupWindow.webContents.send('reminder-triggered', {
@@ -436,20 +431,27 @@ function openNativeWaterPopup(durationSeconds) {
 // 3. SYSTEM TRAY IMPLEMENTATION
 // ========================================================
 function createSystemTray() {
-  const iconPath = path.join(__dirname, 'trayIcon.png');
-  const trayIcon = nativeImage.createFromPath(iconPath);
-  tray = new Tray(trayIcon);
+  try {
+    const iconPath = path.join(__dirname, 'trayIcon.png');
+    const trayIcon = nativeImage.createFromPath(iconPath);
+    tray = new Tray(trayIcon);
 
-  tray.setToolTip('EyeFlow — Digital Wellness Background Daemon');
+    tray.setToolTip('EyeFlow — Digital Wellness Background Daemon');
 
-  tray.on('double-click', () => {
-    if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
+    tray.on('double-click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      } else {
+        createMainWindow();
+      }
+    });
 
-  updateTrayMenu(null, null, false);
+    updateTrayMenu(null, null, false);
+  } catch (err) {
+    console.warn('[SystemTray] Tray initialization warning:', err);
+  }
 }
 
 function updateTrayMenu(nextWater, nextScreen, isPaused) {
@@ -468,9 +470,12 @@ function updateTrayMenu(nextWater, nextScreen, isPaused) {
     {
       label: 'Open EyeFlow',
       click: () => {
-        if (mainWindow) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          if (mainWindow.isMinimized()) mainWindow.restore();
           mainWindow.show();
           mainWindow.focus();
+        } else {
+          createMainWindow();
         }
       },
     },
@@ -612,9 +617,12 @@ function setupIpcHandlers() {
   });
 
   ipcMain.handle('showMainWindow', () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
+    } else {
+      createMainWindow();
     }
     return { success: true };
   });
@@ -630,10 +638,12 @@ if (!gotTheLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
+    } else {
+      createMainWindow();
     }
   });
 
