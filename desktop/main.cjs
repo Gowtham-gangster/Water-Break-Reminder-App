@@ -194,10 +194,12 @@ class NativeBackgroundScheduler {
       );
 
       if (nextWater && !nextWater.isTomorrow) {
-        const delay = Math.max(200, nextWater.timestamp - Date.now());
-        this.waterTimer = setTimeout(() => {
-          this.triggerRealReminder('water', nextWater);
-        }, delay);
+        const delay = nextWater.timestamp - Date.now();
+        if (delay > 1000) {
+          this.waterTimer = setTimeout(() => {
+            this.triggerRealReminder('water', nextWater);
+          }, delay);
+        }
       }
     }
 
@@ -212,10 +214,12 @@ class NativeBackgroundScheduler {
       );
 
       if (nextScreen && !nextScreen.isTomorrow) {
-        const delay = Math.max(200, nextScreen.timestamp - Date.now());
-        this.screenTimer = setTimeout(() => {
-          this.triggerRealReminder('screen', nextScreen);
-        }, delay);
+        const delay = nextScreen.timestamp - Date.now();
+        if (delay > 1000) {
+          this.screenTimer = setTimeout(() => {
+            this.triggerRealReminder('screen', nextScreen);
+          }, delay);
+        }
       }
     }
 

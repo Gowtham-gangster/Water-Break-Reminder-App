@@ -155,7 +155,7 @@ class StorageEngine {
   }
 
   public async getOnboardingStatus(): Promise<boolean> {
-    return this.get<boolean>('onboardingCompleted', false);
+    return this.get<boolean>('onboardingCompleted', true);
   }
 
   public async setOnboardingStatus(completed: boolean): Promise<void> {
