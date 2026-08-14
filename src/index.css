@@ -1,0 +1,113 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+:root {
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* LIGHT MODE (Primary Default Experience - Warm, Calm, Off-White) */
+  --bg-page: #F7F8F5;
+  --bg-surface: #FFFFFF;
+  --bg-surface-elevated: #FFFFFF;
+  --bg-subtle: #F0F2ED;
+  --bg-muted: #E5E8E0;
+
+  /* Typography */
+  --text-primary: #191C1D;
+  --text-secondary: #596166;
+  --text-muted: #889299;
+
+  /* Subtle Borders & Shadows - No harsh lines */
+  --border-subtle: rgba(0, 0, 0, 0.05);
+  --border-strong: rgba(0, 0, 0, 0.1);
+  --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-card: 0 2px 8px -2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.02);
+  --shadow-elevated: 0 12px 32px -8px rgba(0, 0, 0, 0.08), 0 4px 12px -2px rgba(0, 0, 0, 0.03);
+
+  /* Accents - Soft, Natural, Calm */
+  --water-primary: #0284C7;
+  --water-subtle: #F0F9FF;
+  --water-border: rgba(2, 132, 199, 0.15);
+
+  --screen-primary: #6366F1;
+  --screen-subtle: #EEF2FF;
+  --screen-border: rgba(99, 102, 241, 0.15);
+
+  --success-primary: #10B981;
+  --success-subtle: #ECFDF5;
+  --warning-primary: #F59E0B;
+  --warning-subtle: #FFFBEB;
+  --danger-primary: #EF4444;
+  --danger-subtle: #FEF2F2;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+}
+
+[data-theme="dark"] {
+  /* DARK MODE - Elegant, Warm Slate & Charcoal (Not harsh black or neon blue) */
+  --bg-page: #12151A;
+  --bg-surface: #181D24;
+  --bg-surface-elevated: #1F252E;
+  --bg-subtle: #242B35;
+  --bg-muted: #323B47;
+
+  --text-primary: #F3F4F6;
+  --text-secondary: #9CA3AF;
+  --text-muted: #6B7280;
+
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow-elevated: 0 16px 36px rgba(0, 0, 0, 0.4);
+
+  --water-primary: #38BDF8;
+  --water-subtle: rgba(56, 189, 248, 0.12);
+  --water-border: rgba(56, 189, 248, 0.2);
+
+  --screen-primary: #818CF8;
+  --screen-subtle: rgba(129, 140, 248, 0.12);
+  --screen-border: rgba(129, 140, 248, 0.2);
+
+  --success-primary: #34D399;
+  --success-subtle: rgba(52, 211, 153, 0.12);
+  --warning-primary: #FBBF24;
+  --warning-subtle: rgba(251, 191, 36, 0.12);
+  --danger-primary: #F87171;
+  --danger-subtle: rgba(248, 113, 113, 0.12);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleUp {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-scale-up {
+  animation: scaleUp 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
