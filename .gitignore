@@ -25,3 +25,16 @@ dist-electron
 *.njsproj
 *.sln
 *.sw?
+
+# Android Build Outputs & Caches
+android/.gradle
+android/build
+android/app/build
+android/captures
+.gradle
+local.properties
+
+# Release packages
+release/*.exe
+release/*.zip
+release/*.apk

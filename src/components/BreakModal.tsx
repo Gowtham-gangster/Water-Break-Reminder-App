@@ -37,13 +37,15 @@ export const BreakModal: React.FC = () => {
     ? previewReminder.durationSeconds * 1000
     : fallbackDurationMs;
 
-  const [msRemaining, setMsRemaining] = useState(totalDurationMs);
+  const [msRemaining, setMsRemaining] = useState<number>(() =>
+    Math.max(0, targetEndTimestamp - Date.now())
+  );
   const [isCompleted, setIsCompleted] = useState(false);
 
   const hasCompletedRef = useRef<boolean>(false);
 
   useEffect(() => {
-    if (!activeBreakModalOpen) return;
+    if (!activeBreakModalOpen || (!isReal && !isPreview)) return;
 
     hasCompletedRef.current = false;
     setIsCompleted(false);
@@ -57,9 +59,6 @@ export const BreakModal: React.FC = () => {
         setIsCompleted(true);
         notificationEngine.playScreenBell();
 
-        // Separate completion paths:
-        // REAL -> persists completed slot into history & statistics
-        // PREVIEW -> 100% ephemeral, zero side effects
         setTimeout(async () => {
           if (isReal && realActiveReminder) {
             await completeRealReminder('screen', realActiveReminder.slotId);
@@ -77,12 +76,13 @@ export const BreakModal: React.FC = () => {
     activeBreakModalOpen,
     targetEndTimestamp,
     isReal,
+    isPreview,
     realActiveReminder,
     completeRealReminder,
     finishPreview,
   ]);
 
-  if (!activeBreakModalOpen) return null;
+  if (!activeBreakModalOpen || (!isReal && !isPreview)) return null;
 
   // Formatting minutes & seconds
   const totalSecondsLeft = Math.ceil(msRemaining / 1000);

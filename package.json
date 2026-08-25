@@ -12,9 +12,15 @@
     "build": "tsc -b && vite build",
     "desktop": "electron desktop/main.cjs",
     "desktop:dev": "tsc -b && vite build && electron desktop/main.cjs",
-    "package:win": "tsc -b && vite build && electron-builder --win --dir",
-    "build:windows": "tsc -b && vite build && electron-builder --win",
-    "release": "tsc -b && vite build && electron-builder --win nsis",
+    "package:win": "npm run build && electron-builder --win --dir -p never",
+    "dist:win": "npm run build && electron-builder --win nsis -p never && node scripts/bundleRelease.cjs",
+    "dist:all": "npm run build && electron-builder --win nsis zip dir -p never && node scripts/bundleRelease.cjs",
+    "dist": "npm run dist:all",
+    "release": "npm run dist:all",
+    "android:sync": "npm run build && npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:build": "node scripts/buildAndroid.cjs",
+    "build:apk": "node scripts/buildAndroid.cjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -22,6 +28,7 @@
     "appId": "com.eyeflow.desktop",
     "productName": "EyeFlow",
     "npmRebuild": false,
+    "asar": false,
     "directories": {
       "output": "dist-electron"
     },
@@ -39,26 +46,38 @@
           ]
         },
         {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
           "target": "dir",
           "arch": [
             "x64"
           ]
         }
       ],
-      "icon": "desktop/trayIcon.png"
+      "icon": "desktop/appIcon.png"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "EyeFlow",
       "uninstallDisplayName": "EyeFlow Digital Wellness",
+      "runAfterFinish": true,
       "artifactName": "EyeFlow-Setup-${version}.${ext}"
     }
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/local-notifications": "^8.3.1",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "clsx": "^2.1.1",

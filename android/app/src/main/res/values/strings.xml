@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">EyeFlow</string>
+    <string name="title_activity_main">EyeFlow</string>
+    <string name="package_name">com.eyeflow.app</string>
+    <string name="custom_url_scheme">com.eyeflow.app</string>
+</resources>

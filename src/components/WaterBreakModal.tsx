@@ -24,19 +24,15 @@ export const WaterBreakModal: React.FC = () => {
     ? previewReminder.endTimestamp
     : Date.now() + fallbackDurationMs;
 
-  const totalMs = isReal
-    ? realActiveReminder.durationSeconds * 1000
-    : isPreview
-    ? previewReminder.durationSeconds * 1000
-    : fallbackDurationMs;
-
-  const [msRemaining, setMsRemaining] = useState(totalMs);
+  const [msRemaining, setMsRemaining] = useState<number>(() =>
+    Math.max(0, targetEndTimestamp - Date.now())
+  );
   const [isCompleted, setIsCompleted] = useState(false);
 
   const hasCompletedRef = useRef<boolean>(false);
 
   useEffect(() => {
-    if (!activeWaterModalOpen) return;
+    if (!activeWaterModalOpen || (!isReal && !isPreview)) return;
 
     hasCompletedRef.current = false;
     setIsCompleted(false);
@@ -68,12 +64,13 @@ export const WaterBreakModal: React.FC = () => {
     activeWaterModalOpen,
     targetEndTimestamp,
     isReal,
+    isPreview,
     realActiveReminder,
     completeRealReminder,
     finishPreview,
   ]);
 
-  if (!activeWaterModalOpen) return null;
+  if (!activeWaterModalOpen || (!isReal && !isPreview)) return null;
 
   const totalSecsLeft = Math.ceil(msRemaining / 1000);
   const displayMins = Math.floor(totalSecsLeft / 60);

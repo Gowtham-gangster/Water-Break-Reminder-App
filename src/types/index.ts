@@ -4,17 +4,28 @@ export type ReminderEventType = 'REAL' | 'PREVIEW';
 
 export interface RealReminderEvent {
   type: 'REAL';
-  category: 'water' | 'screen';
+  category: 'water' | 'screen' | 'both';
   slotId: string;
+  waterSlotId?: string;
+  screenSlotId?: string;
   durationSeconds: number;
+  waterDurationSeconds?: number;
+  screenDurationSeconds?: number;
+  startTimestamp?: number;
   endTimestamp: number;
+  waterEndTimestamp?: number;
+  screenEndTimestamp?: number;
 }
 
 export interface PreviewReminderEvent {
   type: 'PREVIEW';
-  category: 'water' | 'screen';
+  category: 'water' | 'screen' | 'both';
   durationSeconds: number;
+  waterDurationSeconds?: number;
+  screenDurationSeconds?: number;
   endTimestamp: number;
+  waterEndTimestamp?: number;
+  screenEndTimestamp?: number;
 }
 
 export interface WaterConfig {

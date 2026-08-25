@@ -12,6 +12,7 @@ import { Onboarding } from '../Onboarding';
 import { PauseModal } from '../PauseModal';
 import { BreakModal } from '../BreakModal';
 import { WaterBreakModal } from '../WaterBreakModal';
+import { CombinedBreakModal } from '../CombinedBreakModal';
 
 export const AppShell: React.FC = () => {
   const { activeTab, onboardingCompleted } = useApp();
@@ -49,6 +50,7 @@ export const AppShell: React.FC = () => {
       <PauseModal />
       <BreakModal />
       <WaterBreakModal />
+      <CombinedBreakModal />
     </div>
   );
 };

@@ -6,7 +6,6 @@ import type {
   PauseState,
   WaterReminderLog,
   ScreenBreakLog,
-  ReminderStatus,
 } from '../types';
 
 export interface NextReminderInfo {
@@ -38,13 +37,14 @@ export class ReminderEngineService {
 
   /**
    * Generates a deterministic unique ID for each reminder event
+   * Includes type, calendar date, and scheduled time string
    */
   public generateSlotId(type: 'water' | 'screen', dateStr: string, timeStr: string): string {
-    return `${dateStr}-${type}-${timeStr}`;
+    return `${type}:${dateStr}:${timeStr}`;
   }
 
   /**
-   * Checks if an event has already fired to prevent duplicate alerts
+   * Checks if an event has already fired in the current runtime session
    */
   public hasFired(slotId: string): boolean {
     return this.firedReminders.has(slotId);
@@ -58,7 +58,7 @@ export class ReminderEngineService {
   }
 
   /**
-   * Resets fired set (useful on date rollover)
+   * Resets fired set (e.g. on date rollover or clean restart)
    */
   public clearFiredHistory(): void {
     this.firedReminders.clear();
@@ -73,11 +73,11 @@ export class ReminderEngineService {
     endTime: string,
     intervalMinutes: number
   ): Array<{ timeString: string; timestamp: number }> {
-    const [startH, startM] = startTime.split(':').map(Number);
-    const [endH, endM] = endTime.split(':').map(Number);
+    const [startH, startM] = (startTime || '08:00').split(':').map(Number);
+    const [endH, endM] = (endTime || '22:00').split(':').map(Number);
     const startMinutes = startH * 60 + startM;
     const endMinutes = endH * 60 + endM;
-    const interval = Math.max(5, intervalMinutes);
+    const interval = Math.max(5, intervalMinutes || 30);
 
     const occurrences: Array<{ timeString: string; timestamp: number }> = [];
 
@@ -100,7 +100,8 @@ export class ReminderEngineService {
 
   /**
    * Dynamically calculates the next upcoming occurrence based on device clock (Date.now())
-   * Handles before-start, mid-day interval anchoring, exact boundaries, after-end, and tomorrow rollover
+   * Handles before-start, mid-day interval anchoring, exact boundaries, after-end, and tomorrow rollover.
+   * STRICT GUARANTEE: Never returns a timestamp in the past.
    */
   public findNextOccurrence(
     now: Date,
@@ -111,11 +112,11 @@ export class ReminderEngineService {
     isSlotCompleted?: (timestamp: number) => boolean
   ): { timeString: string; timestamp: number; isTomorrow: boolean } | null {
     const currentTimestamp = now.getTime();
-    const [startH, startM] = startTime.split(':').map(Number);
-    const [endH, endM] = endTime.split(':').map(Number);
+    const [startH, startM] = (startTime || '08:00').split(':').map(Number);
+    const [endH, endM] = (endTime || '22:00').split(':').map(Number);
 
     const startMinutes = startH * 60 + startM;
-    const interval = Math.max(5, intervalMinutes);
+    const interval = Math.max(5, intervalMinutes || 30);
     const intervalMs = interval * 60 * 1000;
 
     const todayStartDate = new Date(now);
@@ -143,7 +144,7 @@ export class ReminderEngineService {
       const elapsedMs = Math.max(0, currentTimestamp - todayStartTimestamp);
       const intervalsElapsed = Math.floor(elapsedMs / intervalMs);
 
-      // Check candidate occurrences starting from current/next interval
+      // Check candidate occurrences starting from the current interval index
       for (let idx = intervalsElapsed; ; idx++) {
         const candidateTimestamp = todayStartTimestamp + idx * intervalMs;
 
@@ -152,8 +153,9 @@ export class ReminderEngineService {
           break;
         }
 
-        // Must be in future or exactly now (if not already elapsed/fired)
-        if (candidateTimestamp >= currentTimestamp) {
+        // STRICT REQUIREMENT: Candidate MUST be in the future (strictly > currentTimestamp + 1000ms)
+        // Never return a past timestamp or a timestamp that was due in a previous session
+        if (candidateTimestamp > currentTimestamp + 1000) {
           const candidateDate = new Date(candidateTimestamp);
           const candM = candidateDate.getHours() * 60 + candidateDate.getMinutes();
 
@@ -178,7 +180,7 @@ export class ReminderEngineService {
       }
     }
 
-    // 3. After today's end time -> next occurrence is tomorrow's start time
+    // 3. After today's end time (or all today slots passed) -> next occurrence is tomorrow's start time
     const tomorrowDate = new Date(now);
     tomorrowDate.setDate(tomorrowDate.getDate() + 1);
     tomorrowDate.setHours(startH, startM, 0, 0);
@@ -222,7 +224,7 @@ export class ReminderEngineService {
     let waterTotalCount = 0;
 
     if (waterConfig.enabled && waterConfig.startTime && waterConfig.endTime) {
-      const interval = Math.max(10, waterConfig.intervalMinutes || 60);
+      const interval = Math.max(5, waterConfig.intervalMinutes || 60);
       const occurrences = this.generateDailyOccurrences(
         now,
         waterConfig.startTime,
@@ -263,19 +265,23 @@ export class ReminderEngineService {
         const slotId = this.generateSlotId('water', todayDateStr, occ.timeString);
         const existing = waterLogsMap.get(occ.timeString);
 
-        if (existing && occ.timestamp <= currentTimestamp) {
+        if (existing && existing.status === 'completed') {
           waterSlots.push(existing);
-        } else {
-          let status: ReminderStatus = 'pending';
-          if (occ.timestamp < currentTimestamp - 600000) {
-            status = 'missed';
-          }
-
+        } else if (occ.timestamp <= currentTimestamp) {
+          // Past occurrence without recorded completion is marked 'missed'
           waterSlots.push({
             id: slotId,
             time: occ.timeString,
             scheduledTimestamp: occ.timestamp,
-            status: existing && existing.status === 'completed' && occ.timestamp <= currentTimestamp ? 'completed' : status,
+            status: 'missed',
+          });
+        } else {
+          // Future occurrence is 'pending'
+          waterSlots.push({
+            id: slotId,
+            time: occ.timeString,
+            scheduledTimestamp: occ.timestamp,
+            status: 'pending',
           });
         }
       }
@@ -284,10 +290,10 @@ export class ReminderEngineService {
       waterTotalCount = waterSlots.length;
 
       if (!isCurrentlyPaused) {
-        // Next slot is the first uncompleted occurrence strictly >= currentTimestamp
+        // Next slot is strictly the first upcoming future occurrence (> currentTimestamp + 1000ms) with pending status
         nextWaterSlot =
           waterSlots.find((slot) => {
-            return slot.scheduledTimestamp >= currentTimestamp && slot.status === 'pending';
+            return slot.scheduledTimestamp > currentTimestamp + 1000 && slot.status === 'pending';
           }) || null;
       }
     }
@@ -302,7 +308,7 @@ export class ReminderEngineService {
     let screenBreakMinutesCompleted = 0;
 
     if (screenConfig.enabled && screenConfig.startTime && screenConfig.endTime) {
-      const interval = Math.max(10, screenConfig.screenIntervalMinutes || 30);
+      const interval = Math.max(5, screenConfig.screenIntervalMinutes || 30);
       const breakDuration = screenConfig.breakDurationMinutes || 5;
 
       const occurrences = this.generateDailyOccurrences(
@@ -319,20 +325,25 @@ export class ReminderEngineService {
         const slotId = this.generateSlotId('screen', todayDateStr, occ.timeString);
         const existing = screenLogsMap.get(occ.timeString);
 
-        if (existing && occ.timestamp <= currentTimestamp) {
+        if (existing && existing.status === 'completed') {
           screenSlots.push(existing);
-        } else {
-          let status: ReminderStatus = 'pending';
-          if (occ.timestamp < currentTimestamp - 600000) {
-            status = 'missed';
-          }
-
+        } else if (occ.timestamp <= currentTimestamp) {
+          // Past occurrence without recorded completion is marked 'missed'
           screenSlots.push({
             id: slotId,
             time: occ.timeString,
             scheduledTimestamp: occ.timestamp,
             durationMinutes: breakDuration,
-            status: existing && existing.status === 'completed' && occ.timestamp <= currentTimestamp ? 'completed' : status,
+            status: 'missed',
+          });
+        } else {
+          // Future occurrence is 'pending'
+          screenSlots.push({
+            id: slotId,
+            time: occ.timeString,
+            scheduledTimestamp: occ.timestamp,
+            durationMinutes: breakDuration,
+            status: 'pending',
           });
         }
       }
@@ -342,10 +353,10 @@ export class ReminderEngineService {
       screenBreakMinutesCompleted = screenCompletedCount * breakDuration;
 
       if (!isCurrentlyPaused) {
-        // Next slot is the first uncompleted occurrence strictly >= currentTimestamp
+        // Next slot is strictly the first upcoming future occurrence (> currentTimestamp + 1000ms) with pending status
         nextScreenSlot =
           screenSlots.find((slot) => {
-            return slot.scheduledTimestamp >= currentTimestamp && slot.status === 'pending';
+            return slot.scheduledTimestamp > currentTimestamp + 1000 && slot.status === 'pending';
           }) || null;
       }
     }
@@ -410,13 +421,18 @@ export class ReminderEngineService {
   }
 
   /**
-   * Sets a single zero-polling setTimeout timer for the next reminder
+   * Sets a single zero-polling setTimeout timer for the next future reminder.
+   * Strictly returns null if targetTimestamp is in the past. Never fires past reminders.
    */
   public scheduleTimer(
     targetTimestamp: number,
     onTrigger: () => void
-  ): ReturnType<typeof setTimeout> {
-    const delay = Math.max(100, targetTimestamp - Date.now());
+  ): ReturnType<typeof setTimeout> | null {
+    const delay = targetTimestamp - Date.now();
+    if (delay <= 1000) {
+      // Past or immediate threshold -> do NOT trigger past timer
+      return null;
+    }
     return setTimeout(onTrigger, delay);
   }
 }

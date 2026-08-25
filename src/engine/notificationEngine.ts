@@ -1,13 +1,16 @@
-// Centralized Production Notification Service for EyeFlow (Desktop Native + Web Mode)
+// Centralized Production Notification Service for EyeFlow (Windows Desktop + Android Mobile + Web Mode)
+import { LocalNotifications } from '@capacitor/local-notifications';
 import {
   isPermissionGranted as isTauriPermissionGranted,
   requestPermission as requestTauriPermission,
   sendNotification as sendTauriNotification,
 } from '@tauri-apps/plugin-notification';
+import { detectPlatform } from '../platform/systemLifecycle';
 
 export interface NotificationDiagnostics {
   permissionState: NotificationPermission;
   isDesktop: boolean;
+  isMobile: boolean;
   isWebBrowser: boolean;
   lastAttemptStatus: 'success' | 'blocked' | 'error' | 'none';
   lastError: string | null;
@@ -23,14 +26,12 @@ export class NotificationService {
   private lastWaterNotifyTime = 0;
   private lastScreenNotifyTime = 0;
   private audioCtx: AudioContext | null = null;
+  private channelsCreated = false;
 
   public lastAttemptStatus: 'success' | 'blocked' | 'error' | 'none' = 'none';
   public lastError: string | null = null;
   public lastFiredTimestamp: number | null = null;
 
-  /**
-   * Detects if currently executing inside native desktop container (Electron or Tauri)
-   */
   public isDesktop(): boolean {
     if (typeof window === 'undefined') return false;
     return (
@@ -38,6 +39,11 @@ export class NotificationService {
       '__TAURI_INTERNALS__' in window ||
       Boolean((window as any).process?.type)
     );
+  }
+
+  public isMobile(): boolean {
+    const platform = detectPlatform();
+    return platform === 'android';
   }
 
   public isTauri(): boolean {
@@ -59,12 +65,48 @@ export class NotificationService {
     }
   }
 
+  private async initAndroidChannels() {
+    if (this.channelsCreated || !this.isMobile()) return;
+    try {
+      await LocalNotifications.createChannel({
+        id: 'eyeflow_water_channel',
+        name: 'Water Reminders',
+        description: 'Notifications reminding you to hydrate and take a water break',
+        importance: 5,
+        visibility: 1,
+        vibration: true,
+      });
+
+      await LocalNotifications.createChannel({
+        id: 'eyeflow_screen_channel',
+        name: 'Look Outside Screen Breaks',
+        description: 'Notifications reminding you to give your eyes a short break from the screen',
+        importance: 5,
+        visibility: 1,
+        vibration: true,
+      });
+
+      this.channelsCreated = true;
+    } catch (_) {}
+  }
+
   /**
    * Returns current real permission state ('granted' | 'denied' | 'default')
    */
   public async getPermissionStatus(): Promise<NotificationPermission> {
     if (this.isElectron()) {
       return 'granted';
+    }
+
+    if (this.isMobile()) {
+      try {
+        const perm = await LocalNotifications.checkPermissions();
+        if (perm.display === 'granted') return 'granted';
+        if (perm.display === 'denied') return 'denied';
+        return 'default';
+      } catch {
+        return 'default';
+      }
     }
 
     if (this.isTauri()) {
@@ -89,6 +131,17 @@ export class NotificationService {
   public async requestPermission(): Promise<NotificationPermission> {
     if (this.isElectron()) {
       return 'granted';
+    }
+
+    if (this.isMobile()) {
+      await this.initAndroidChannels();
+      try {
+        const perm = await LocalNotifications.requestPermissions();
+        return perm.display === 'granted' ? 'granted' : 'denied';
+      } catch (e: any) {
+        this.lastError = e?.message || 'Android notification permission request failed';
+        return 'denied';
+      }
     }
 
     if (this.isTauri()) {
@@ -210,8 +263,38 @@ export class NotificationService {
 
     this.playWaterChime();
 
-    const title = '💧 Water Break';
-    const body = 'Time to drink some water. Take a short break.';
+    const title = '💧 Time for water';
+    const body = 'Take a 2-minute water break.';
+
+    if (this.isMobile()) {
+      await this.initAndroidChannels();
+      try {
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              id: Math.floor(Date.now() % 1000000),
+              title,
+              body,
+              schedule: { at: new Date(Date.now() + 100) },
+              channelId: 'eyeflow_water_channel',
+              actionTypeId: 'water',
+              extra: {
+                category: 'water',
+                slotId: `imm-water-${Date.now()}`,
+              },
+            },
+          ],
+        });
+        this.lastAttemptStatus = 'success';
+        this.lastError = null;
+        if (onComplete) onComplete();
+        return { success: true };
+      } catch (err: any) {
+        this.lastAttemptStatus = 'error';
+        this.lastError = err?.message || 'Android notification failed';
+        return { success: false, error: this.lastError! };
+      }
+    }
 
     if (this.isTauri()) {
       try {
@@ -284,8 +367,38 @@ export class NotificationService {
 
     this.playScreenBell();
 
-    const title = '👀 Look Outside';
-    const body = 'Take a short break from your screen.';
+    const title = '👁 Look outside';
+    const body = 'Give your eyes a short break from the screen.';
+
+    if (this.isMobile()) {
+      await this.initAndroidChannels();
+      try {
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              id: Math.floor(Date.now() % 1000000),
+              title,
+              body,
+              schedule: { at: new Date(Date.now() + 100) },
+              channelId: 'eyeflow_screen_channel',
+              actionTypeId: 'screen',
+              extra: {
+                category: 'screen',
+                slotId: `imm-screen-${Date.now()}`,
+              },
+            },
+          ],
+        });
+        this.lastAttemptStatus = 'success';
+        this.lastError = null;
+        if (onStartBreak) onStartBreak();
+        return { success: true };
+      } catch (err: any) {
+        this.lastAttemptStatus = 'error';
+        this.lastError = err?.message || 'Android notification failed';
+        return { success: false, error: this.lastError! };
+      }
+    }
 
     if (this.isTauri()) {
       try {
@@ -363,7 +476,8 @@ export class NotificationService {
     return {
       permissionState,
       isDesktop: this.isDesktop(),
-      isWebBrowser: !this.isDesktop(),
+      isMobile: this.isMobile(),
+      isWebBrowser: !this.isDesktop() && !this.isMobile(),
       lastAttemptStatus: this.lastAttemptStatus,
       lastError: this.lastError,
       lastFiredTimestamp: this.lastFiredTimestamp,
