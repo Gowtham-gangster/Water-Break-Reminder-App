@@ -1,17 +1,28 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { Pause, Play, X, Clock, Calendar } from 'lucide-react';
+import { Pause, Play, X, Clock, Calendar, Sliders } from 'lucide-react';
 import { Button } from './ui';
 
 export const PauseModal: React.FC = () => {
   const { activePauseModalOpen, setActivePauseModalOpen, pauseState, setPauseDuration } =
     useApp();
 
+  const [customMinutes, setCustomMinutes] = useState<number>(45);
+  const [showCustomInput, setShowCustomInput] = useState(false);
+
   if (!activePauseModalOpen) return null;
 
   const handleSelectPause = async (mins: number | 'tomorrow') => {
     await setPauseDuration(mins);
     setActivePauseModalOpen(false);
+  };
+
+  const handleCustomSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (customMinutes > 0) {
+      await setPauseDuration(customMinutes);
+      setActivePauseModalOpen(false);
+    }
   };
 
   const handleResume = async () => {
@@ -68,27 +79,79 @@ export const PauseModal: React.FC = () => {
         )}
 
         <div className="grid grid-cols-2 gap-3">
-          {[
-            { mins: 15, label: '15 Minutes', sub: 'Quick focus' },
-            { mins: 30, label: '30 Minutes', sub: 'Short meeting' },
-            { mins: 60, label: '1 Hour', sub: 'Deep work' },
-            { mins: 'tomorrow' as const, label: 'Until Tomorrow', sub: 'Resume at 8:00 AM' },
-          ].map((item) => (
-            <button
-              key={String(item.mins)}
-              onClick={() => handleSelectPause(item.mins)}
-              className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-muted)] border border-[var(--border-subtle)] text-left transition-all cursor-pointer group"
-            >
-              <div className="flex items-center gap-1.5">
-                {item.mins === 'tomorrow' && <Calendar className="w-3 h-3 text-[var(--screen-primary)]" />}
-                <span className="block font-semibold text-xs text-[var(--text-primary)]">
-                  {item.label}
-                </span>
-              </div>
-              <span className="text-[11px] text-[var(--text-muted)] mt-0.5 block">{item.sub}</span>
-            </button>
-          ))}
+          <button
+            onClick={() => handleSelectPause(30)}
+            className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-muted)] border border-[var(--border-subtle)] text-left transition-all cursor-pointer"
+          >
+            <div className="flex items-center gap-1.5">
+              <Clock className="w-3 h-3 text-[var(--warning-primary)]" />
+              <span className="block font-semibold text-xs text-[var(--text-primary)]">
+                30 Minutes
+              </span>
+            </div>
+            <span className="text-[11px] text-[var(--text-muted)] mt-0.5 block">Short meeting</span>
+          </button>
+
+          <button
+            onClick={() => handleSelectPause(60)}
+            className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-muted)] border border-[var(--border-subtle)] text-left transition-all cursor-pointer"
+          >
+            <div className="flex items-center gap-1.5">
+              <Clock className="w-3 h-3 text-[var(--warning-primary)]" />
+              <span className="block font-semibold text-xs text-[var(--text-primary)]">
+                1 Hour
+              </span>
+            </div>
+            <span className="text-[11px] text-[var(--text-muted)] mt-0.5 block">Deep work</span>
+          </button>
+
+          <button
+            onClick={() => handleSelectPause('tomorrow')}
+            className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-muted)] border border-[var(--border-subtle)] text-left transition-all cursor-pointer"
+          >
+            <div className="flex items-center gap-1.5">
+              <Calendar className="w-3 h-3 text-[var(--screen-primary)]" />
+              <span className="block font-semibold text-xs text-[var(--text-primary)]">
+                Today
+              </span>
+            </div>
+            <span className="text-[11px] text-[var(--text-muted)] mt-0.5 block">Resume tomorrow 8 AM</span>
+          </button>
+
+          <button
+            onClick={() => setShowCustomInput(!showCustomInput)}
+            className={`p-3.5 rounded-[var(--radius-md)] border text-left transition-all cursor-pointer ${
+              showCustomInput
+                ? 'bg-[var(--bg-muted)] border-[var(--text-primary)]'
+                : 'bg-[var(--bg-subtle)] hover:bg-[var(--bg-muted)] border-[var(--border-subtle)]'
+            }`}
+          >
+            <div className="flex items-center gap-1.5">
+              <Sliders className="w-3 h-3 text-[var(--water-primary)]" />
+              <span className="block font-semibold text-xs text-[var(--text-primary)]">
+                Custom
+              </span>
+            </div>
+            <span className="text-[11px] text-[var(--text-muted)] mt-0.5 block">Set custom minutes</span>
+          </button>
         </div>
+
+        {showCustomInput && (
+          <form onSubmit={handleCustomSubmit} className="pt-2 flex items-center gap-2 animate-fade-in">
+            <input
+              type="number"
+              min="1"
+              max="1440"
+              value={customMinutes}
+              onChange={(e) => setCustomMinutes(Math.max(1, parseInt(e.target.value) || 1))}
+              className="form-input text-xs py-2 px-3 flex-1"
+              placeholder="Minutes (e.g. 45)"
+            />
+            <Button variant="primary" size="sm" type="submit">
+              Set Pause
+            </Button>
+          </form>
+        )}
       </div>
     </div>
   );

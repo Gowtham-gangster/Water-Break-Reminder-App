@@ -1,9 +1,18 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { APP_CONFIG } from '../config/app.config';
-import { Button, Card, Select, TimePicker } from './ui';
-import { Droplets, Eye, ArrowRight, CheckCircle2, Sparkles } from 'lucide-react';
+import { Card, Button, Select, TimePicker } from './ui';
+import { Droplets, Eye, ArrowRight, CheckCircle2, Sparkles, Check, Bell } from 'lucide-react';
 import { notificationEngine } from '../engine/notificationEngine';
+
+const DAYS_OF_WEEK = [
+  { day: 1, label: 'Mon', full: 'Monday' },
+  { day: 2, label: 'Tue', full: 'Tuesday' },
+  { day: 3, label: 'Wed', full: 'Wednesday' },
+  { day: 4, label: 'Thu', full: 'Thursday' },
+  { day: 5, label: 'Fri', full: 'Friday' },
+  { day: 6, label: 'Sat', full: 'Saturday' },
+  { day: 0, label: 'Sun', full: 'Sunday' },
+];
 
 export const Onboarding: React.FC = () => {
   const {
@@ -14,46 +23,82 @@ export const Onboarding: React.FC = () => {
     completeOnboarding,
   } = useApp();
 
-  const [step, setStep] = useState(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
-  // Local configuration state for Step 2 and Step 3
-  const [localWater, setLocalWater] = useState({
-    startTime: waterConfig.startTime || '08:00',
-    endTime: waterConfig.endTime || '22:00',
-    intervalMinutes: waterConfig.intervalMinutes || 60,
-  });
+  // STEP 1: Water Configuration State
+  const [waterEnabled, setWaterEnabled] = useState(waterConfig.enabled ?? true);
+  const [waterInterval, setWaterInterval] = useState(waterConfig.intervalMinutes || 30);
+  const [waterStartTime, setWaterStartTime] = useState(waterConfig.startTime || '09:00');
+  const [waterEndTime, setWaterEndTime] = useState(waterConfig.endTime || '21:00');
+  const [waterDuration, setWaterDuration] = useState(waterConfig.durationMinutes || 1); // 1 = 60s
+  const [waterDays, setWaterDays] = useState<number[]>(waterConfig.activeDays || [1, 2, 3, 4, 5]);
 
-  const [localScreen, setLocalScreen] = useState({
-    startTime: screenBreakConfig.startTime || '09:00',
-    endTime: screenBreakConfig.endTime || '22:00',
-    screenIntervalMinutes: screenBreakConfig.screenIntervalMinutes || 30,
-    breakDurationMinutes: screenBreakConfig.breakDurationMinutes || 5,
-  });
+  // STEP 2: Look Outside Configuration State
+  const [screenEnabled, setScreenEnabled] = useState(screenBreakConfig.enabled ?? true);
+  const [screenInterval, setScreenInterval] = useState(screenBreakConfig.screenIntervalMinutes || 20);
+  const [screenStartTime, setScreenStartTime] = useState(screenBreakConfig.startTime || '09:00');
+  const [screenEndTime, setScreenEndTime] = useState(screenBreakConfig.endTime || '21:00');
+  const [screenDuration, setScreenDuration] = useState(screenBreakConfig.breakDurationMinutes || 5);
+  const [screenDays, setScreenDays] = useState<number[]>(screenBreakConfig.activeDays || [1, 2, 3, 4, 5]);
+
+  const [saving, setSaving] = useState(false);
+
+  const toggleWaterDay = (day: number) => {
+    if (waterDays.includes(day)) {
+      if (waterDays.length > 1) {
+        setWaterDays(waterDays.filter((d) => d !== day));
+      }
+    } else {
+      setWaterDays([...waterDays, day]);
+    }
+  };
+
+  const toggleScreenDay = (day: number) => {
+    if (screenDays.includes(day)) {
+      if (screenDays.length > 1) {
+        setScreenDays(screenDays.filter((d) => d !== day));
+      }
+    } else {
+      setScreenDays([...screenDays, day]);
+    }
+  };
 
   const handleFinish = async () => {
-    // Save configurations
-    await setWaterConfig({
-      ...waterConfig,
-      startTime: localWater.startTime,
-      endTime: localWater.endTime,
-      intervalMinutes: localWater.intervalMinutes,
-      enabled: true,
-    });
+    setSaving(true);
+    try {
+      // 1. Save Water Configuration
+      await setWaterConfig({
+        ...waterConfig,
+        enabled: waterEnabled,
+        startTime: waterStartTime,
+        endTime: waterEndTime,
+        intervalMinutes: waterInterval,
+        durationMinutes: waterDuration,
+        activeDays: waterDays,
+      });
 
-    await setScreenBreakConfig({
-      ...screenBreakConfig,
-      startTime: localScreen.startTime,
-      endTime: localScreen.endTime,
-      screenIntervalMinutes: localScreen.screenIntervalMinutes,
-      breakDurationMinutes: localScreen.breakDurationMinutes,
-      enabled: true,
-    });
+      // 2. Save Look Outside Configuration
+      await setScreenBreakConfig({
+        ...screenBreakConfig,
+        enabled: screenEnabled,
+        startTime: screenStartTime,
+        endTime: screenEndTime,
+        screenIntervalMinutes: screenInterval,
+        breakDurationMinutes: screenDuration,
+        activeDays: screenDays,
+      });
 
-    // Request notification permission during final step
-    await notificationEngine.requestPermission();
+      // 3. Request permissions & trigger background scheduler
+      await notificationEngine.requestPermission();
 
-    // Mark onboarding completed
-    await completeOnboarding();
+      // 4. Mark onboarding complete -> leads directly to Dashboard
+      await completeOnboarding();
+    } catch (e) {
+      console.warn('[Onboarding] Error finalizing setup:', e);
+      await completeOnboarding();
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -67,7 +112,9 @@ export const Onboarding: React.FC = () => {
         <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider">
-              Step {step} of 3
+              {step === 1 && 'Step 1 of 3 — Water'}
+              {step === 2 && 'Step 2 of 3 — Look Outside'}
+              {step === 3 && 'Step 3 of 3 — Complete'}
             </span>
           </div>
 
@@ -87,74 +134,51 @@ export const Onboarding: React.FC = () => {
           </div>
         </div>
 
-        {/* STEP 1: Welcome & Value Proposition */}
+        {/* ==========================================
+            STEP 1: WATER REMINDERS
+        ========================================== */}
         {step === 1 && (
-          <div className="space-y-6 text-center py-2">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white mx-auto shadow-md">
-              <Sparkles className="w-8 h-8" />
-            </div>
-
-            <div className="space-y-1.5">
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-[var(--text-primary)]">
-                {APP_CONFIG.name}
-              </h1>
-              <p className="text-xs font-bold uppercase tracking-widest text-[var(--water-primary)]">
-                {APP_CONFIG.tagline}
-              </p>
-              <p className="text-xs sm:text-sm text-[var(--text-secondary)] max-w-xs mx-auto pt-2">
-                Simple reminders to help you build healthier screen habits throughout your workday.
-              </p>
-            </div>
-
-            <div className="pt-4">
-              <Button
-                variant="primary"
-                size="lg"
-                fullWidth
-                onClick={() => setStep(2)}
-                rightIcon={<ArrowRight className="w-4 h-4" />}
-              >
-                Get Started
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* STEP 2: Water Reminder Setup */}
-        {step === 2 && (
-          <div className="space-y-6 py-2">
+          <div className="space-y-5 animate-fade-in">
             <div className="text-center space-y-1.5">
-              <div className="w-12 h-12 rounded-2xl bg-[var(--water-subtle)] text-[var(--water-primary)] mx-auto flex items-center justify-center border border-[var(--water-border)]">
+              <div className="w-12 h-12 rounded-2xl bg-[var(--water-subtle)] text-[var(--water-primary)] mx-auto flex items-center justify-center border border-[var(--water-border)] shadow-sm">
                 <Droplets className="w-6 h-6" />
               </div>
               <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)]">
-                Water
+                Stay Hydrated
               </h2>
               <p className="text-xs sm:text-sm text-[var(--text-secondary)]">
-                Set your water reminder.
+                Customize your daily hydration rhythm.
               </p>
             </div>
 
-            <div className="space-y-4 pt-2">
-              <div className="grid grid-cols-2 gap-4">
-                <TimePicker
-                  label="Start time"
-                  value={localWater.startTime}
-                  onChange={(e) => setLocalWater({ ...localWater, startTime: e.target.value })}
-                />
-                <TimePicker
-                  label="End time"
-                  value={localWater.endTime}
-                  onChange={(e) => setLocalWater({ ...localWater, endTime: e.target.value })}
-                />
+            <div className="space-y-4 pt-1">
+              {/* Enable Toggle */}
+              <div className="flex items-center justify-between p-3 rounded-xl bg-[var(--bg-tertiary)]/50 border border-[var(--border-subtle)]">
+                <div>
+                  <h4 className="text-xs font-bold text-[var(--text-primary)]">Water Reminders</h4>
+                  <p className="text-[11px] text-[var(--text-secondary)]">Receive scheduled hydration alerts</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setWaterEnabled(!waterEnabled)}
+                  className={`w-11 h-6 rounded-full transition-colors relative ${
+                    waterEnabled ? 'bg-[var(--water-primary)]' : 'bg-slate-700'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                      waterEnabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
               </div>
 
+              {/* How often */}
               <Select
-                label="Interval"
-                value={localWater.intervalMinutes}
-                onChange={(e) =>
-                  setLocalWater({ ...localWater, intervalMinutes: Number(e.target.value) })
-                }
+                label="How often?"
+                value={waterInterval}
+                disabled={!waterEnabled}
+                onChange={(e) => setWaterInterval(Number(e.target.value))}
                 options={[
                   { value: 30, label: 'Every 30 minutes' },
                   { value: 45, label: 'Every 45 minutes' },
@@ -163,9 +187,181 @@ export const Onboarding: React.FC = () => {
                   { value: 120, label: 'Every 2 hours' },
                 ]}
               />
+
+              {/* Start & End Times */}
+              <div className="grid grid-cols-2 gap-3">
+                <TimePicker
+                  label="Start"
+                  value={waterStartTime}
+                  onChange={(e) => setWaterStartTime(e.target.value)}
+                />
+                <TimePicker
+                  label="End"
+                  value={waterEndTime}
+                  onChange={(e) => setWaterEndTime(e.target.value)}
+                />
+              </div>
+
+              {/* Reminder Duration */}
+              <Select
+                label="Reminder duration"
+                value={waterDuration}
+                disabled={!waterEnabled}
+                onChange={(e) => setWaterDuration(Number(e.target.value))}
+                options={[
+                  { value: 1, label: '60 seconds' },
+                  { value: 2, label: '2 minutes' },
+                  { value: 3, label: '3 minutes' },
+                  { value: 5, label: '5 minutes' },
+                ]}
+              />
+
+              {/* Active Days */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-[var(--text-secondary)]">Active days</label>
+                <div className="grid grid-cols-7 gap-1.5">
+                  {DAYS_OF_WEEK.map(({ day, label }) => {
+                    const isSelected = waterDays.includes(day);
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        onClick={() => toggleWaterDay(day)}
+                        className={`py-2 text-xs font-semibold rounded-xl border transition-all text-center ${
+                          isSelected
+                            ? 'bg-[var(--water-primary)] text-white border-transparent shadow-sm'
+                            : 'bg-[var(--bg-tertiary)]/60 text-[var(--text-muted)] border-[var(--border-subtle)] hover:text-[var(--text-primary)]'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
-            <div className="flex items-center gap-3 pt-4">
+            <div className="pt-2">
+              <Button
+                variant="primary"
+                size="lg"
+                fullWidth
+                onClick={() => setStep(2)}
+                rightIcon={<ArrowRight className="w-4 h-4" />}
+              >
+                Continue
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* ==========================================
+            STEP 2: LOOK OUTSIDE REMINDERS
+        ========================================== */}
+        {step === 2 && (
+          <div className="space-y-5 animate-fade-in">
+            <div className="text-center space-y-1.5">
+              <div className="w-12 h-12 rounded-2xl bg-[var(--screen-subtle)] text-[var(--screen-primary)] mx-auto flex items-center justify-center border border-[var(--screen-border)] shadow-sm">
+                <Eye className="w-6 h-6" />
+              </div>
+              <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)]">
+                Give Your Eyes A Break
+              </h2>
+              <p className="text-xs sm:text-sm text-[var(--text-secondary)]">
+                Relieve screen fatigue with 20-20-20 breaks.
+              </p>
+            </div>
+
+            <div className="space-y-4 pt-1">
+              {/* Enable Toggle */}
+              <div className="flex items-center justify-between p-3 rounded-xl bg-[var(--bg-tertiary)]/50 border border-[var(--border-subtle)]">
+                <div>
+                  <h4 className="text-xs font-bold text-[var(--text-primary)]">Look Outside Breaks</h4>
+                  <p className="text-[11px] text-[var(--text-secondary)]">Receive 20-20-20 vision rest reminders</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setScreenEnabled(!screenEnabled)}
+                  className={`w-11 h-6 rounded-full transition-colors relative ${
+                    screenEnabled ? 'bg-[var(--screen-primary)]' : 'bg-slate-700'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                      screenEnabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {/* How often */}
+              <Select
+                label="How often?"
+                value={screenInterval}
+                disabled={!screenEnabled}
+                onChange={(e) => setScreenInterval(Number(e.target.value))}
+                options={[
+                  { value: 20, label: 'Every 20 minutes (20-20-20 Rule)' },
+                  { value: 25, label: 'Every 25 minutes (Pomodoro)' },
+                  { value: 30, label: 'Every 30 minutes' },
+                  { value: 45, label: 'Every 45 minutes' },
+                  { value: 60, label: 'Every 60 minutes' },
+                ]}
+              />
+
+              {/* Start & End Times */}
+              <div className="grid grid-cols-2 gap-3">
+                <TimePicker
+                  label="Start"
+                  value={screenStartTime}
+                  onChange={(e) => setScreenStartTime(e.target.value)}
+                />
+                <TimePicker
+                  label="End"
+                  value={screenEndTime}
+                  onChange={(e) => setScreenEndTime(e.target.value)}
+                />
+              </div>
+
+              {/* Break Duration */}
+              <Select
+                label="Break duration"
+                value={screenDuration}
+                onChange={(e) => setScreenDuration(Number(e.target.value))}
+                options={[
+                  { value: 1, label: '20 seconds (Standard Eye Rest)' },
+                  { value: 2, label: '2 minutes' },
+                  { value: 5, label: '5 minutes' },
+                  { value: 10, label: '10 minutes' },
+                ]}
+              />
+
+              {/* Active Days */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-[var(--text-secondary)]">Active days</label>
+                <div className="grid grid-cols-7 gap-1.5">
+                  {DAYS_OF_WEEK.map(({ day, label }) => {
+                    const isSelected = screenDays.includes(day);
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        onClick={() => toggleScreenDay(day)}
+                        className={`py-2 text-xs font-semibold rounded-xl border transition-all text-center ${
+                          isSelected
+                            ? 'bg-[var(--screen-primary)] text-white border-transparent shadow-sm'
+                            : 'bg-[var(--bg-tertiary)]/60 text-[var(--text-muted)] border-[var(--border-subtle)] hover:text-[var(--text-primary)]'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
               <Button variant="outline" size="md" onClick={() => setStep(1)}>
                 Back
               </Button>
@@ -182,84 +378,54 @@ export const Onboarding: React.FC = () => {
           </div>
         )}
 
-        {/* STEP 3: Look Outside Setup & Finish */}
+        {/* ==========================================
+            STEP 3: COMPLETE
+        ========================================== */}
         {step === 3 && (
-          <div className="space-y-6 py-2">
-            <div className="text-center space-y-1.5">
-              <div className="w-12 h-12 rounded-2xl bg-[var(--screen-subtle)] text-[var(--screen-primary)] mx-auto flex items-center justify-center border border-[var(--screen-border)]">
-                <Eye className="w-6 h-6" />
+          <div className="space-y-6 text-center py-4 animate-fade-in">
+            <div className="relative mx-auto w-20 h-20">
+              <div className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-emerald-500 via-teal-500 to-sky-400 p-[2px] shadow-xl">
+                <div className="w-full h-full bg-[var(--bg-secondary)] rounded-3xl flex items-center justify-center">
+                  <CheckCircle2 className="w-10 h-10 text-emerald-400" />
+                </div>
               </div>
-              <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-[var(--text-primary)]">
-                Look Outside
+              <div className="absolute -inset-2 bg-emerald-500/20 blur-xl rounded-full pointer-events-none" />
+            </div>
+
+            <div className="space-y-2">
+              <h2 className="text-2xl sm:text-3xl font-extrabold text-[var(--text-primary)] tracking-tight">
+                You're all set!
               </h2>
-              <p className="text-xs sm:text-sm text-[var(--text-secondary)]">
-                Set your screen break.
+              <p className="text-sm text-[var(--text-secondary)] max-w-xs mx-auto leading-relaxed">
+                PauseFlow will now remind you automatically in the background according to your schedule.
               </p>
             </div>
 
-            <div className="space-y-4 pt-2">
-              <div className="grid grid-cols-2 gap-4">
-                <TimePicker
-                  label="Start time"
-                  value={localScreen.startTime}
-                  onChange={(e) => setLocalScreen({ ...localScreen, startTime: e.target.value })}
-                />
-                <TimePicker
-                  label="End time"
-                  value={localScreen.endTime}
-                  onChange={(e) => setLocalScreen({ ...localScreen, endTime: e.target.value })}
-                />
+            <div className="p-4 rounded-2xl bg-[var(--bg-tertiary)]/50 border border-[var(--border-subtle)] text-left space-y-2 text-xs text-[var(--text-secondary)]">
+              <div className="flex items-center gap-2">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>Water reminders every <strong>{waterInterval} mins</strong> ({waterStartTime} - {waterEndTime})</span>
               </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <Select
-                  label="Screen interval"
-                  value={localScreen.screenIntervalMinutes}
-                  onChange={(e) =>
-                    setLocalScreen({
-                      ...localScreen,
-                      screenIntervalMinutes: Number(e.target.value),
-                    })
-                  }
-                  options={[
-                    { value: 20, label: '20 minutes (20-20-20)' },
-                    { value: 25, label: '25 minutes (Pomodoro)' },
-                    { value: 30, label: '30 minutes' },
-                    { value: 45, label: '45 minutes' },
-                    { value: 60, label: '60 minutes' },
-                  ]}
-                />
-
-                <Select
-                  label="Break duration"
-                  value={localScreen.breakDurationMinutes}
-                  onChange={(e) =>
-                    setLocalScreen({
-                      ...localScreen,
-                      breakDurationMinutes: Number(e.target.value),
-                    })
-                  }
-                  options={[
-                    { value: 2, label: '2 minutes' },
-                    { value: 5, label: '5 minutes (Standard)' },
-                    { value: 10, label: '10 minutes' },
-                  ]}
-                />
+              <div className="flex items-center gap-2">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>Look Outside breaks every <strong>{screenInterval} mins</strong> ({screenStartTime} - {screenEndTime})</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Bell className="w-4 h-4 text-sky-400 shrink-0" />
+                <span>Native background reminders and tray support active</span>
               </div>
             </div>
 
-            <div className="flex items-center gap-3 pt-4">
-              <Button variant="outline" size="md" onClick={() => setStep(2)}>
-                Back
-              </Button>
+            <div className="pt-2">
               <Button
-                variant="screen"
-                size="md"
+                variant="primary"
+                size="lg"
                 fullWidth
+                disabled={saving}
                 onClick={handleFinish}
-                leftIcon={<CheckCircle2 className="w-4 h-4" />}
+                rightIcon={<Sparkles className="w-4 h-4" />}
               >
-                Finish Setup
+                {saving ? 'Initializing...' : 'Go to Dashboard'}
               </Button>
             </div>
           </div>

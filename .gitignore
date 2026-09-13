@@ -35,6 +35,10 @@ android/captures
 local.properties
 
 # Release packages
-release/*.exe
-release/*.zip
-release/*.apk
+release/
+*.exe
+*.zip
+*.apk
+!releases/
+!releases/README.md
+!releases/desktop/*.bat

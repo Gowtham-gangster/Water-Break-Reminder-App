@@ -197,6 +197,7 @@ class AndroidSchedulerService {
             allowWhileIdle: true,
           },
           extra: {
+            userId: n.userId || '',
             originalId: n.id,
             category: n.category,
             scheduledTimestamp: n.scheduledTimestamp,

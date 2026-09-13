@@ -8,8 +8,22 @@ class WindowsBackgroundScheduler implements IBackgroundSchedulerService {
     // Windows Electron background daemon manages native setTimeout / scheduler loops natively
   }
 
+  async syncUserSchedule(userId: string, notifications: ScheduledNotification[]): Promise<void> {
+    if ((window as any).eyeflowNative?.syncUserSchedule) {
+      await (window as any).eyeflowNative.syncUserSchedule(userId, notifications);
+    }
+  }
+
+  async cancelUserSchedule(userId: string): Promise<void> {
+    if ((window as any).eyeflowNative?.cancelUserSchedule) {
+      await (window as any).eyeflowNative.cancelUserSchedule(userId);
+    }
+  }
+
   async cancelAllNotifications(): Promise<void> {
-    // Managed via pause/resume IPC
+    if ((window as any).eyeflowNative?.cancelAllReminders) {
+      await (window as any).eyeflowNative.cancelAllReminders();
+    }
   }
 
   async pause(minutes: number | 'tomorrow'): Promise<void> {
@@ -30,6 +44,14 @@ class AndroidBackgroundScheduler implements IBackgroundSchedulerService {
     await androidScheduler.scheduleAllReminders(notifications);
   }
 
+  async syncUserSchedule(_userId: string, notifications: ScheduledNotification[]): Promise<void> {
+    await androidScheduler.scheduleAllReminders(notifications);
+  }
+
+  async cancelUserSchedule(_userId: string): Promise<void> {
+    await androidScheduler.cancelAllReminders();
+  }
+
   async cancelAllNotifications(): Promise<void> {
     await androidScheduler.cancelAllReminders();
   }
@@ -47,6 +69,10 @@ class WebBackgroundScheduler implements IBackgroundSchedulerService {
   async scheduleLocalNotifications(): Promise<void> {
     // Web uses runtime reminderEngine in active tab
   }
+
+  async syncUserSchedule(): Promise<void> {}
+
+  async cancelUserSchedule(): Promise<void> {}
 
   async cancelAllNotifications(): Promise<void> {}
 

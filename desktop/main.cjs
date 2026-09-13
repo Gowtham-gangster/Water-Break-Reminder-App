@@ -1,4 +1,4 @@
-// EyeFlow Windows Native Background Desktop Application & Scheduler Daemon
+// PauseFlow Windows Native Background Desktop Application & Scheduler Daemon
 const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, powerMonitor, nativeImage, dialog, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -10,19 +10,33 @@ app.commandLine.appendSwitch('disable-gpu-sandbox');
 
 // Global Uncaught Exception & Promise Rejection Handlers
 process.on('uncaughtException', (err) => {
-  console.error('[EyeFlow UncaughtException]', err);
+  console.error('[PauseFlow UncaughtException]', err);
   try {
-    dialog.showErrorBox('EyeFlow Unexpected Error', `An error occurred: ${err?.message || err}`);
+    dialog.showErrorBox('PauseFlow Unexpected Error', `An error occurred: ${err?.message || err}`);
   } catch (_) {}
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[EyeFlow UnhandledRejection]', reason);
+  console.error('[PauseFlow UnhandledRejection]', reason);
 });
 
 // Paths resolution
 const userDataPath = app.getPath('userData');
 const configFilePath = path.join(userDataPath, 'eyeflow_desktop_config.json');
+const logFilePath = path.join(userDataPath, 'eyeflow_startup.log');
+
+function logToFile(...args) {
+  const line = `[${new Date().toISOString()}] ${args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ')}\n`;
+  try {
+    fs.appendFileSync(logFilePath, line, 'utf8');
+  } catch (_) {}
+  console.log(...args);
+}
+
+logToFile('[PauseFlow] Process boot starting...');
+logToFile('[PauseFlow] Process argv:', process.argv);
+logToFile('[PauseFlow] AppPath:', app.getAppPath());
+logToFile('[PauseFlow] UserData:', userDataPath);
 
 // Deterministic resource path resolvers for both development and packaged production
 function getRendererPath() {
@@ -206,12 +220,12 @@ function loadAppFile(targetWindow, queryParams = {}) {
   const fileUrl = url.pathToFileURL(fileTarget).href + (query ? `?${query}` : '');
 
   targetWindow.loadURL(fileUrl).catch((err1) => {
-    console.warn('[EyeFlow Loader] loadURL failed:', err1?.message);
+    console.warn('[PauseFlow Loader] loadURL failed:', err1?.message);
     targetWindow.loadFile(fileTarget, { query: queryParams }).catch((err2) => {
-      console.error('[EyeFlow Loader] All loader strategies failed:', err2);
+      console.error('[PauseFlow Loader] All loader strategies failed:', err2);
       dialog.showErrorBox(
-        'EyeFlow Resource Error',
-        `EyeFlow could not load its application interface.\n\nPath: ${fileTarget}\nError: ${err2?.message || err2}`
+        'PauseFlow Resource Error',
+        `PauseFlow could not load its application interface.\n\nPath: ${fileTarget}\nError: ${err2?.message || err2}`
       );
     });
   });
@@ -455,6 +469,17 @@ class NativeBackgroundScheduler {
       isPreview: false,
     });
 
+    // 3. Notify mainWindow immediately that real reminder was triggered
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('reminder-triggered', {
+        type: category,
+        slotId,
+        scheduledAt: new Date(occurrence.timestamp).toISOString(),
+        triggeredAt: Date.now(),
+        durationSeconds,
+      });
+    }
+
     // Schedule subsequent slot dynamically
     setTimeout(() => {
       this.reschedule();
@@ -488,7 +513,7 @@ function createMainWindow() {
     height: 760,
     minWidth: 700,
     minHeight: 550,
-    title: 'EyeFlow',
+    title: 'PauseFlow',
     show: true,
     backgroundColor: '#090d16',
     frame: true,
@@ -505,6 +530,7 @@ function createMainWindow() {
   mainWindow.setMenu(null);
   mainWindow.setMenuBarVisibility(false);
 
+  logToFile('[Electron] Main window created');
   loadAppFile(mainWindow, { mode: 'dashboard' });
 
   mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription) => {
@@ -520,7 +546,13 @@ function createMainWindow() {
     if (!app.isQuitting) {
       e.preventDefault();
       mainWindow.hide();
+      logToFile('[Electron] Main window hidden to tray');
     }
+  });
+
+  mainWindow.on('closed', () => {
+    logToFile('[Electron] Main window closed');
+    mainWindow = null;
   });
 }
 
@@ -542,6 +574,14 @@ function completeActiveReminderItem(type, slotId, isPreview) {
     }
     console.log(`[Reminder] LOGGED: ${type} ${slotId}`);
     scheduler.reschedule();
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('native-reminder-completed', {
+        type,
+        slotId,
+        completedAt: new Date().toISOString(),
+      });
+    }
   }
 
   activeRemindersMap.delete(slotId);
@@ -558,6 +598,44 @@ function completeActiveReminderItem(type, slotId, isPreview) {
   } else {
     // Other reminder is still counting down; update remaining reminders in the overlay
     console.log('[Reminder] keeping overlay because other reminder is still active');
+    if (reminderWindow && !reminderWindow.isDestroyed()) {
+      reminderWindow.webContents.send('active-reminders-updated', Array.from(activeRemindersMap.values()));
+    }
+  }
+}
+
+// Authoritative lifecycle expiration/skip function
+function expireActiveReminderItem(type, slotId, isPreview) {
+  console.log(`[Reminder] EXPIRE/SKIP: ${type} (${slotId})`);
+
+  // Clear native timer for this slot
+  if (activeReminderTimersMap.has(slotId)) {
+    clearTimeout(activeReminderTimersMap.get(slotId));
+    activeReminderTimersMap.delete(slotId);
+  }
+
+  if (!isPreview) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('native-reminder-expired', {
+        type,
+        slotId,
+        expiredAt: new Date().toISOString(),
+      });
+    }
+    scheduler.reschedule();
+  }
+
+  activeRemindersMap.delete(slotId);
+  console.log(`[Reminder] ACTIVE_REMINDERS remaining: ${activeRemindersMap.size}`);
+
+  if (activeRemindersMap.size === 0) {
+    console.log('[Reminder] OVERLAY_CLOSE — releasing input block');
+    if (reminderWindow && !reminderWindow.isDestroyed()) {
+      reminderWindow.destroy();
+      reminderWindow = null;
+    }
+    console.log('[Reminder] INPUT_BLOCK_RELEASED — desktop interaction restored');
+  } else {
     if (reminderWindow && !reminderWindow.isDestroyed()) {
       reminderWindow.webContents.send('active-reminders-updated', Array.from(activeRemindersMap.values()));
     }
@@ -637,6 +715,11 @@ function addActiveReminder(item) {
         reminderWindow.webContents.send('active-reminders-updated', Array.from(activeRemindersMap.values()));
       }
     });
+
+    reminderWindow.on('closed', () => {
+      logToFile('[Electron] Reminder overlay window closed');
+      reminderWindow = null;
+    });
   } else {
     // Window is ALREADY open (e.g. Look Outside is added while Water is counting down)
     reminderWindow.setBounds(displayBounds);
@@ -660,7 +743,7 @@ function createSystemTray() {
   try {
     const trayIcon = getTrayIcon();
     tray = new Tray(trayIcon);
-    tray.setToolTip('EyeFlow — Digital Wellness Background Daemon');
+    tray.setToolTip('PauseFlow — Digital Wellness Background Daemon');
 
     tray.on('double-click', () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -673,7 +756,7 @@ function createSystemTray() {
     });
 
     updateTrayMenu(null, null, false);
-    console.log('[EyeFlow] Tray initialized');
+    console.log('[PauseFlow] Tray initialized');
   } catch (err) {
     console.warn('[SystemTray] Tray initialization warning:', err);
   }
@@ -687,13 +770,13 @@ function updateTrayMenu(nextWater, nextScreen, isPaused) {
 
   tray.setToolTip(
     isPaused
-      ? 'EyeFlow — Reminders Paused'
-      : `EyeFlow\n💧 Water: ${waterStr}\n👀 Look Outside: ${screenStr}`
+      ? 'PauseFlow — Reminders Paused'
+      : `PauseFlow\n💧 Water: ${waterStr}\n👀 Look Outside: ${screenStr}`
   );
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Open EyeFlow',
+      label: 'Open PauseFlow',
       click: () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           if (mainWindow.isMinimized()) mainWindow.restore();
@@ -729,7 +812,7 @@ function updateTrayMenu(nextWater, nextScreen, isPaused) {
     },
     { type: 'separator' },
     {
-      label: 'Exit EyeFlow',
+      label: 'Exit PauseFlow',
       click: () => {
         app.isQuitting = true;
         app.quit();
@@ -778,6 +861,16 @@ function setupIpcHandlers() {
 
   ipcMain.handle('completeReminder', (_e, category, slotId) => {
     completeActiveReminderItem(category, slotId, false);
+    return { success: true };
+  });
+
+  ipcMain.handle('skipReminderItem', (_e, type, slotId, isPreview) => {
+    expireActiveReminderItem(type, slotId, Boolean(isPreview));
+    return { success: true };
+  });
+
+  ipcMain.handle('skipReminder', (_e, category, slotId) => {
+    expireActiveReminderItem(category, slotId, false);
     return { success: true };
   });
 
@@ -881,6 +974,96 @@ function setupIpcHandlers() {
     }
     return { success: true };
   });
+
+  // V2 User-Scoped Schedule Synchronization Handlers
+  let currentActiveUserId = null;
+  const userDaemonTimers = new Map();
+
+  ipcMain.handle('syncUserSchedule', (_e, userId, notifications) => {
+    // 1. If switching user, cancel all previous user timers
+    if (currentActiveUserId && currentActiveUserId !== userId) {
+      for (const [key, timer] of userDaemonTimers.entries()) {
+        clearTimeout(timer);
+        userDaemonTimers.delete(key);
+      }
+    }
+    currentActiveUserId = userId;
+
+    // 2. Clear existing timers for this user
+    for (const [key, timer] of userDaemonTimers.entries()) {
+      if (key.startsWith(`${userId}:`)) {
+        clearTimeout(timer);
+        userDaemonTimers.delete(key);
+      }
+    }
+
+    // 3. Queue future notifications
+    if (Array.isArray(notifications)) {
+      const now = Date.now();
+      for (const notif of notifications) {
+        if (notif.scheduledTimestamp > now + 1000) {
+          const delay = notif.scheduledTimestamp - now;
+          const key = `${userId}:${notif.id}`;
+          const timer = setTimeout(() => {
+            userDaemonTimers.delete(key);
+            // Verify current active user is still matching
+            if (currentActiveUserId !== userId) return;
+
+            // Display non-intrusive native Windows Notification
+            if (Notification.isSupported()) {
+              const nativeNotif = new Notification({
+                title: notif.title || (notif.category === 'water' ? '💧 Time for water' : '👁 Look outside'),
+                body: notif.body || (notif.category === 'water' ? 'Take a short water break.' : 'Rest your eyes from the screen.'),
+                icon: getTrayIcon(),
+                silent: false,
+              });
+
+              nativeNotif.on('click', () => {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                  if (mainWindow.isMinimized()) mainWindow.restore();
+                  mainWindow.show();
+                  mainWindow.focus();
+                  mainWindow.webContents.send('notification-tap', {
+                    category: notif.category,
+                    slotId: notif.id,
+                    userId,
+                  });
+                }
+              });
+
+              nativeNotif.show();
+            }
+          }, delay);
+
+          userDaemonTimers.set(key, timer);
+        }
+      }
+    }
+
+    return { success: true, queuedCount: userDaemonTimers.size };
+  });
+
+  ipcMain.handle('cancelUserSchedule', (_e, userId) => {
+    for (const [key, timer] of userDaemonTimers.entries()) {
+      if (!userId || key.startsWith(`${userId}:`)) {
+        clearTimeout(timer);
+        userDaemonTimers.delete(key);
+      }
+    }
+    if (currentActiveUserId === userId) {
+      currentActiveUserId = null;
+    }
+    return { success: true };
+  });
+
+  ipcMain.handle('cancelAllReminders', () => {
+    for (const timer of userDaemonTimers.values()) {
+      clearTimeout(timer);
+    }
+    userDaemonTimers.clear();
+    currentActiveUserId = null;
+    return { success: true };
+  });
 }
 
 // ========================================================
@@ -888,12 +1071,14 @@ function setupIpcHandlers() {
 // ========================================================
 // Single instance lock
 const gotTheLock = app.requestSingleInstanceLock();
+logToFile('[EyeFlow] Single instance lock acquired:', gotTheLock);
 
 if (!gotTheLock) {
-  console.log('[EyeFlow] Another instance is already running. Quitting duplicate.');
+  logToFile('[EyeFlow] Another instance is already running. Quitting duplicate.');
   app.quit();
 } else {
   app.on('second-instance', () => {
+    logToFile('[EyeFlow] Second instance detected. Restoring/focusing main window.');
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
@@ -907,17 +1092,17 @@ if (!gotTheLock) {
     // 1. Explicitly remove the default Electron File/Edit/View/Window menu globally
     Menu.setApplicationMenu(null);
 
-    console.log('[EyeFlow] Application initialized');
-    console.log('[EyeFlow] Electron application menu disabled (Menu.setApplicationMenu(null))');
-    console.log('[EyeFlow] Clearing transient reminder state');
-    console.log('[EyeFlow] Recalculating schedule from Date.now()');
+    logToFile('[EyeFlow] Application initialized');
+    logToFile('[EyeFlow] Electron application menu disabled (Menu.setApplicationMenu(null))');
+    logToFile('[EyeFlow] Clearing transient reminder state');
+    logToFile('[EyeFlow] Recalculating schedule from Date.now()');
 
     createMainWindow();
     createSystemTray();
     setupIpcHandlers();
     scheduler.reschedule();
-    console.log('[EyeFlow] Scheduler initialized');
-    console.log('[EyeFlow] Ready');
+    logToFile('[EyeFlow] Scheduler initialized');
+    logToFile('[EyeFlow] Ready');
 
     // Sleep/Wake listener
     powerMonitor.on('resume', () => {
@@ -930,8 +1115,25 @@ if (!gotTheLock) {
     });
   });
 
-  app.on('window-all-closed', (e) => {
-    // Keep background daemon alive in system tray
-    e.preventDefault();
+  app.on('before-quit', () => {
+    logToFile('[EyeFlow] App preparing to quit (before-quit)');
+    app.isQuitting = true;
+  });
+
+  app.on('will-quit', () => {
+    logToFile('[EyeFlow] App will quit. Cleaning up system tray and timers.');
+    if (tray) {
+      try {
+        tray.destroy();
+        tray = null;
+      } catch (_) {}
+    }
+  });
+
+  app.on('window-all-closed', () => {
+    // Keep background daemon alive in system tray on Windows unless quitting
+    if (!app.isQuitting) {
+      logToFile('[EyeFlow] All windows closed. Background daemon remaining in system tray.');
+    }
   });
 }

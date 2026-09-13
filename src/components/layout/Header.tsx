@@ -1,9 +1,26 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
-import { Sun, Moon, Pause, Sparkles } from 'lucide-react';
+import { Sun, Moon, Pause, LogOut } from 'lucide-react';
+import { BrandLogo } from '../ui';
 
 export const Header: React.FC = () => {
-  const { pauseState, setActivePauseModalOpen, generalSettings, setGeneralSettings } = useApp();
+  const {
+    setActiveTab,
+    pauseState,
+    setActivePauseModalOpen,
+    generalSettings,
+    setGeneralSettings,
+    currentUser,
+    logout,
+  } = useApp();
+
+  const [avatarLoadFailed, setAvatarLoadFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    setAvatarLoadFailed(false);
+  }, [currentUser?.avatar_url]);
+
+  const userInitial = (currentUser?.display_name || currentUser?.email || 'U')[0].toUpperCase();
 
   const toggleTheme = () => {
     const nextTheme = generalSettings.theme === 'dark' ? 'light' : 'dark';
@@ -12,14 +29,29 @@ export const Header: React.FC = () => {
 
   return (
     <header className="md:hidden sticky top-0 z-30 bg-[var(--bg-surface)] border-b border-[var(--border-subtle)] px-4 py-3 flex items-center justify-between select-none">
-      <div className="flex items-center gap-2.5">
-        <div className="w-7 h-7 rounded-lg bg-[var(--text-primary)] text-[var(--bg-page)] flex items-center justify-center">
-          <Sparkles className="w-3.5 h-3.5" />
-        </div>
-        <span className="font-bold text-sm text-[var(--text-primary)]">EyeFlow</span>
-      </div>
+      <BrandLogo size="md" textClassName="text-[var(--text-primary)]" />
 
       <div className="flex items-center gap-2">
+        {currentUser && (
+          <button
+            onClick={() => setActiveTab('profile')}
+            className="w-7 h-7 rounded-full bg-sky-500/20 text-sky-400 font-bold flex items-center justify-center text-[11px] overflow-hidden cursor-pointer"
+            title="Profile"
+          >
+            {currentUser.avatar_url && !avatarLoadFailed ? (
+              <img
+                key={currentUser.avatar_url}
+                src={currentUser.avatar_url}
+                alt=""
+                className="w-full h-full object-cover"
+                onError={() => setAvatarLoadFailed(true)}
+              />
+            ) : (
+              userInitial
+            )}
+          </button>
+        )}
+
         {pauseState.isPaused && (
           <button
             onClick={() => setActivePauseModalOpen(true)}
@@ -40,6 +72,16 @@ export const Header: React.FC = () => {
             <Moon className="w-4 h-4" />
           )}
         </button>
+
+        {currentUser && (
+          <button
+            onClick={logout}
+            className="p-2 rounded-md hover:bg-rose-500/10 text-[var(--text-secondary)] hover:text-rose-400 transition-all cursor-pointer"
+            title="Log Out"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </header>
   );

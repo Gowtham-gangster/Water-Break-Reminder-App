@@ -1,17 +1,17 @@
 {
-  "name": "eyeflow",
-  "productName": "EyeFlow",
+  "name": "pauseflow",
+  "productName": "PauseFlow",
   "version": "1.0.0",
   "description": "Digital wellness desktop application for hydration and healthy screen breaks.",
-  "author": "EyeFlow Team",
-  "main": "desktop/main.cjs",
+  "author": "PauseFlow Team",
+  "main": "index.cjs",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "desktop": "electron desktop/main.cjs",
-    "desktop:dev": "tsc -b && vite build && electron desktop/main.cjs",
+    "desktop": "electron index.cjs",
+    "desktop:dev": "tsc -b && vite build && electron index.cjs",
     "package:win": "npm run build && electron-builder --win --dir -p never",
     "dist:win": "npm run build && electron-builder --win nsis -p never && node scripts/bundleRelease.cjs",
     "dist:all": "npm run build && electron-builder --win nsis zip dir -p never && node scripts/bundleRelease.cjs",
@@ -21,23 +21,41 @@
     "android:open": "npx cap open android",
     "android:build": "node scripts/buildAndroid.cjs",
     "build:apk": "node scripts/buildAndroid.cjs",
+    "server:dev": "node --experimental-strip-types server/index.ts",
+    "server:test": "node --experimental-strip-types scripts/testV2Backend.mjs",
+    "test:auth": "node --experimental-strip-types scripts/testV2Auth.mjs",
+    "test:profile": "node --experimental-strip-types scripts/testV2Profile.mjs",
+    "test:settings": "node --experimental-strip-types scripts/testV2Settings.mjs",
+    "test:config": "node --experimental-strip-types scripts/testV2PersonalConfig.mjs",
+    "test:scheduler-v2": "node --experimental-strip-types scripts/testV2UserScopedEngine.mjs",
+    "test:notifications": "node --experimental-strip-types scripts/testV2NotificationSync.mjs",
+    "test:stats": "node --experimental-strip-types scripts/testV2Statistics.mjs",
+    "test:security": "node --experimental-strip-types scripts/testV2SecurityAudit.mjs",
+    "test:offline-sync": "node --experimental-strip-types scripts/testV2OfflineSync.mjs",
+    "test:supabase": "node --experimental-strip-types scripts/testV2SupabaseArchitecture.mjs",
+    "test:auth-v2": "node --experimental-strip-types scripts/testV2SupabaseAuth.mjs",
+    "test:profile-v2": "node --experimental-strip-types scripts/testV2SupabaseProfile.mjs",
+    "test:settings-v2": "node --experimental-strip-types scripts/testV2Settings.mjs",
+    "test:master": "node --experimental-strip-types scripts/testV2MasterRegression.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },
   "build": {
     "appId": "com.eyeflow.desktop",
-    "productName": "EyeFlow",
+    "productName": "PauseFlow",
     "npmRebuild": false,
     "asar": false,
     "directories": {
       "output": "dist-electron"
     },
     "files": [
+      "index.cjs",
       "dist/**/*",
       "desktop/**/*",
       "public/**/*"
     ],
     "win": {
+      "executableName": "PauseFlow",
       "target": [
         {
           "target": "nsis",
@@ -58,7 +76,7 @@
           ]
         }
       ],
-      "icon": "desktop/appIcon.png"
+      "icon": "desktop/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -66,10 +84,10 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "EyeFlow",
-      "uninstallDisplayName": "EyeFlow Digital Wellness",
+      "shortcutName": "PauseFlow",
+      "uninstallDisplayName": "PauseFlow Digital Wellness",
       "runAfterFinish": true,
-      "artifactName": "EyeFlow-Setup-${version}.${ext}"
+      "artifactName": "PauseFlow-Setup-${version}.${ext}"
     }
   },
   "dependencies": {
@@ -78,6 +96,7 @@
     "@capacitor/cli": "^8.5.0",
     "@capacitor/core": "^8.5.0",
     "@capacitor/local-notifications": "^8.3.1",
+    "@supabase/supabase-js": "^2.116.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "clsx": "^2.1.1",

@@ -3,51 +3,109 @@ import { useApp } from '../context/AppContext';
 import { notificationEngine, type NotificationDiagnostics } from '../engine/notificationEngine';
 import { androidScheduler, type AndroidSchedulerDiagnostics } from '../platform/androidScheduler';
 import { detectPlatform } from '../platform/systemLifecycle';
-import { Card, Button, Toggle, TimePicker, Badge, useToast } from './ui';
+import { authService } from '../services/authService';
+import { syncService } from '../services/syncService';
+import { Card, Button, Toggle, Badge, useToast } from './ui';
+import { SyncDiagnosticsPanel } from './SyncDiagnosticsPanel';
 import {
   Settings,
   Bell,
-  Droplets,
-  Eye,
-  Palette,
+  Volume2,
+  Clock,
+  Globe,
+  Sliders,
+  Pause,
+  Play,
   Shield,
   Download,
   Info,
-  Sparkles,
   AlertTriangle,
-  Monitor,
   Activity,
   Zap,
   Smartphone,
+  RefreshCw,
+  User,
+  Trash2,
+  X,
+  VolumeX,
+  Database,
 } from 'lucide-react';
+
+const COMMON_TIMEZONES = [
+  { value: 'UTC', label: 'UTC (Coordinated Universal Time)' },
+  { value: 'America/New_York', label: 'America/New York (Eastern Time, UTC-5 / UTC-4)' },
+  { value: 'America/Chicago', label: 'America/Chicago (Central Time, UTC-6 / UTC-5)' },
+  { value: 'America/Denver', label: 'America/Denver (Mountain Time, UTC-7 / UTC-6)' },
+  { value: 'America/Los_Angeles', label: 'America/Los Angeles (Pacific Time, UTC-8 / UTC-7)' },
+  { value: 'America/Anchorage', label: 'America/Anchorage (Alaska Time, UTC-9)' },
+  { value: 'Pacific/Honolulu', label: 'Pacific/Honolulu (Hawaii Time, UTC-10)' },
+  { value: 'America/Sao_Paulo', label: 'America/Sao Paulo (Brasilia Time, UTC-3)' },
+  { value: 'Europe/London', label: 'Europe/London (GMT / BST, UTC+0 / UTC+1)' },
+  { value: 'Europe/Paris', label: 'Europe/Paris (Central European Time, UTC+1 / UTC+2)' },
+  { value: 'Europe/Berlin', label: 'Europe/Berlin (Central European Time, UTC+1 / UTC+2)' },
+  { value: 'Europe/Helsinki', label: 'Europe/Helsinki (Eastern European Time, UTC+2 / UTC+3)' },
+  { value: 'Asia/Dubai', label: 'Asia/Dubai (Gulf Standard Time, UTC+4)' },
+  { value: 'Asia/Kolkata', label: 'Asia/Kolkata (India Standard Time, UTC+5:30)' },
+  { value: 'Asia/Bangkok', label: 'Asia/Bangkok (Indochina Time, UTC+7)' },
+  { value: 'Asia/Singapore', label: 'Asia/Singapore (Singapore Time, UTC+8)' },
+  { value: 'Asia/Tokyo', label: 'Asia/Tokyo (Japan Standard Time, UTC+9)' },
+  { value: 'Australia/Sydney', label: 'Australia/Sydney (AEST, UTC+10 / UTC+11)' },
+  { value: 'Pacific/Auckland', label: 'Pacific/Auckland (New Zealand Time, UTC+12 / UTC+13)' },
+];
+
+const WATER_SOUND_OPTIONS = [
+  { id: 'water', label: 'Gentle Stream', desc: 'Calming two-tone stream drops' },
+  { id: 'chime', label: 'Soft Chime', desc: 'Three-tone gentle ascending chime' },
+  { id: 'bubble', label: 'Calm Bubble', desc: 'Soft playful water bubble pop' },
+  { id: 'soft', label: 'Subtle Ping', desc: 'Minimalist unobtrusive ping' },
+  { id: 'none', label: 'Silent', desc: 'No audio chime on water alerts' },
+];
+
+const LOOK_OUTSIDE_SOUND_OPTIONS = [
+  { id: 'bell', label: 'Tibetan Bell', desc: 'Deep resonant meditation bell' },
+  { id: 'gong', label: 'Zen Gong', desc: 'Warm peaceful harmonic gong' },
+  { id: 'nature', label: 'Forest Birds', desc: 'Gentle nature morning birds' },
+  { id: 'soft', label: 'Soft Chime', desc: 'Subtle two-tone relaxation chime' },
+  { id: 'none', label: 'Silent', desc: 'No audio chime on screen breaks' },
+];
 
 export const SettingsPage: React.FC = () => {
   const {
+    currentUser,
     generalSettings,
     setGeneralSettings,
     notificationSettings,
     setNotificationSettings,
+    pauseState,
+    setPauseDuration,
     waterConfig,
-    setWaterConfig,
     screenBreakConfig,
-    setScreenBreakConfig,
-    nextWaterSlot,
-    nextScreenSlot,
     currentDeviceTimestamp,
+    logout,
   } = useApp();
 
   const { showToast } = useToast();
-
   const isAndroid = detectPlatform() === 'android';
 
   const [activeSubTab, setActiveSubTab] = useState<
-    'experience' | 'notifications' | 'diagnostics' | 'general' | 'water' | 'screen' | 'appearance' | 'privacy' | 'about'
-  >('experience');
+    'general' | 'notifications' | 'pause' | 'privacy' | 'diagnostics' | 'syncDiagnostics' | 'about'
+  >('general');
 
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [diagnostics, setDiagnostics] = useState<NotificationDiagnostics | null>(null);
   const [androidDiag, setAndroidDiag] = useState<AndroidSchedulerDiagnostics | null>(null);
-  const [isTestingAlarm, setIsTestingAlarm] = useState(false);
-  const [testResultMsg, setTestResultMsg] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<string>(new Date().toLocaleTimeString());
+
+  // Custom Pause state
+  const [customPauseMins, setCustomPauseMins] = useState<number>(45);
+
+  // Delete Account Modal State
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const refreshDiagnostics = async () => {
     const diag = await notificationEngine.getDiagnostics();
@@ -67,7 +125,7 @@ export const SettingsPage: React.FC = () => {
     const perm = await notificationEngine.requestPermission();
     await refreshDiagnostics();
     if (perm === 'granted') {
-      showToast('Notification permission enabled ✓', 'success');
+      showToast('Notification permission granted ✓', 'success');
     } else {
       showToast('Notification permission was not granted.', 'warning');
     }
@@ -83,73 +141,112 @@ export const SettingsPage: React.FC = () => {
     showToast('Opening Android Battery Optimization settings...', 'info');
   };
 
-  const handleTest30SecReminder = async (type: 'water' | 'screen' = 'water') => {
-    setIsTestingAlarm(true);
-    setTestResultMsg(null);
-    const res = await androidScheduler.scheduleTestReminder(30, type);
-    setIsTestingAlarm(false);
-    if (res.success) {
-      setTestResultMsg(
-        `✓ Notification reminder scheduled for ${new Date(res.timestamp).toLocaleTimeString()} (ID: ${res.id}). Close EyeFlow or lock your phone to test background delivery!`
-      );
-      showToast('Notification scheduled for 30s!', 'success');
-      await refreshDiagnostics();
-    } else {
-      setTestResultMsg(`✗ Failed to schedule: ${res.error}`);
-      showToast(`Test failed: ${res.error}`, 'error');
-    }
-  };
-
-  const handleTest2MinExactReminder = async () => {
-    setIsTestingAlarm(true);
-    setTestResultMsg(null);
-    const canExact = await androidScheduler.checkExactAlarmPermission();
-    if (!canExact) {
-      setIsTestingAlarm(false);
-      setTestResultMsg('⚠ Precise reminder permission is not enabled. Tap "Enable Precise Reminders" below.');
-      showToast('Precise reminder permission required!', 'warning');
+  // Preview sounds
+  const handlePreviewWaterSound = (soundId: string) => {
+    if (soundId === 'none') {
+      showToast('Silent mode selected (no preview)', 'info');
       return;
     }
-    const res = await androidScheduler.scheduleTestReminder(120, 'water');
-    setIsTestingAlarm(false);
-    if (res.success) {
-      setTestResultMsg(
-        `✓ Exact reminder scheduled for ${new Date(res.timestamp).toLocaleTimeString()} (ID: ${res.id}). You can swipe away EyeFlow now!`
-      );
-      showToast('2-minute exact reminder scheduled!', 'success');
-      await refreshDiagnostics();
-    } else {
-      setTestResultMsg(`✗ Failed to schedule: ${res.error}`);
-      showToast(`Test failed: ${res.error}`, 'error');
+    notificationEngine.playWaterSound(soundId);
+    showToast(`Playing ${soundId} preview`, 'info');
+  };
+
+  const handlePreviewLookOutsideSound = (soundId: string) => {
+    if (soundId === 'none') {
+      showToast('Silent mode selected (no preview)', 'info');
+      return;
+    }
+    notificationEngine.playLookOutsideSound(soundId);
+    showToast(`Playing ${soundId} preview`, 'info');
+  };
+
+  // Auto-detect device timezone
+  const handleAutoDetectTimezone = () => {
+    const detected = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    setGeneralSettings({ ...generalSettings, timezone: detected });
+    showToast(`Timezone updated to ${detected}`, 'success');
+  };
+
+
+
+  // Manual Cloud Sync
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await syncService.syncUserAccount(currentUser?.id || 'guest');
+      if (res.success) {
+        setLastSyncTime(new Date().toLocaleTimeString());
+        showToast('Settings & reminder schedules synchronized with cloud ✓', 'success');
+      } else {
+        showToast(`Sync notice: ${res.error || 'Check network connection'}`, 'info');
+      }
+    } catch {
+      showToast('Sync failed. Please check network connection.', 'error');
+    } finally {
+      setIsSyncing(false);
     }
   };
 
+  // JSON Data Backup
   const exportDataJSON = () => {
     const data = {
-      waterConfig,
-      screenBreakConfig,
+      userId: currentUser?.id,
+      userEmail: currentUser?.email,
       generalSettings,
       notificationSettings,
+      waterConfig,
+      screenBreakConfig,
+      pauseState,
       exportedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `eyeflow_backup_${Date.now()}.json`;
+    a.download = `eyeflow_settings_${currentUser?.id || 'guest'}_${Date.now()}.json`;
     a.click();
-    showToast('Settings exported successfully!', 'success');
+    showToast('User settings exported successfully!', 'success');
+  };
+
+  // Delete Account
+  const handleDeleteAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDeleteError(null);
+
+    if (deleteConfirmText.trim().toUpperCase() !== 'DELETE') {
+      setDeleteError('Please type DELETE in capital letters to confirm.');
+      return;
+    }
+    if (!deletePassword) {
+      setDeleteError('Please enter your account password.');
+      return;
+    }
+
+    setDeleteLoading(true);
+    try {
+      const res = await authService.deleteAccount(deletePassword);
+      if (res.error) {
+        setDeleteError(res.error);
+        setDeleteLoading(false);
+      } else {
+        setDeleteModalOpen(false);
+        await logout();
+      }
+    } catch {
+      setDeleteError('Failed to delete account. Please verify password and connection.');
+      setDeleteLoading(false);
+    }
   };
 
   return (
-    <div className="space-y-8 select-none">
+    <div className="space-y-8 select-none animate-fade-in">
       {/* Header */}
       <div className="space-y-1">
-        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-[var(--text-primary)]">
           Settings
         </h1>
         <p className="text-xs sm:text-sm text-[var(--text-secondary)]">
-          Manage your reminders, preferences, and notifications.
+          Manage your personal preferences, audio notifications, and account privacy.
         </p>
       </div>
 
@@ -157,16 +254,14 @@ export const SettingsPage: React.FC = () => {
         {/* Navigation Sub-Tabs */}
         <div className="md:col-span-4 space-y-1">
           {[
-            { id: 'experience' as const, label: 'Reminder Experience', icon: Monitor },
-            { id: 'notifications' as const, label: 'Notifications', icon: Bell },
-            ...(isAndroid
-              ? [{ id: 'diagnostics' as const, label: 'Android Diagnostics & Test', icon: Activity }]
-              : []),
             { id: 'general' as const, label: 'General', icon: Settings },
-            { id: 'water' as const, label: 'Water', icon: Droplets },
-            { id: 'screen' as const, label: 'Look Outside', icon: Eye },
-            { id: 'appearance' as const, label: 'Theme', icon: Palette },
-            { id: 'privacy' as const, label: 'Privacy & Backup', icon: Shield },
+            { id: 'notifications' as const, label: 'Notifications & Audio', icon: Bell },
+            { id: 'pause' as const, label: 'Pause Reminders', icon: Pause },
+            { id: 'privacy' as const, label: 'Privacy & Account', icon: Shield },
+            { id: 'syncDiagnostics' as const, label: 'Cross-Device Sync', icon: Database },
+            ...(isAndroid
+              ? [{ id: 'diagnostics' as const, label: 'Android Diagnostics', icon: Activity }]
+              : []),
             { id: 'about' as const, label: 'About', icon: Info },
           ].map((tab) => {
             const Icon = tab.icon;
@@ -190,454 +285,114 @@ export const SettingsPage: React.FC = () => {
         </div>
 
         {/* Content Area */}
-        <div className="md:col-span-8">
-          {/* 1. REMINDER EXPERIENCE SUBTAB */}
-          {activeSubTab === 'experience' && (
+        <div className="md:col-span-8 space-y-6">
+          {/* ========================================================
+              1. GENERAL SUBTAB (Theme, Time Format, Timezone)
+              ======================================================== */}
+          {activeSubTab === 'general' && (
             <Card variant="default" padding="lg" className="space-y-6">
               <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
-                <h2 className="font-semibold text-base text-[var(--text-primary)]">
-                  Reminder Experience
-                </h2>
-                <Badge variant="screen">Automated</Badge>
+                <div>
+                  <h2 className="font-semibold text-base text-[var(--text-primary)]">General Settings</h2>
+                  <p className="text-xs text-[var(--text-secondary)]">Customized for your user account</p>
+                </div>
+                <Badge variant="water">User-Scoped</Badge>
               </div>
 
-              {/* Platform Status Cards */}
-              <div className="p-4 rounded-[var(--radius-lg)] bg-[var(--bg-subtle)] space-y-3">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[var(--text-secondary)]">Platform Architecture:</span>
-                  <span className="font-semibold text-[var(--text-primary)]">
-                    {diagnostics?.isDesktop
-                      ? 'Windows Desktop (Native Daemon)'
-                      : isAndroid
-                      ? 'Android Native (FullScreen Intent + AlarmManager)'
-                      : 'Web Application'}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-[var(--text-secondary)]">System Notifications:</span>
-                  <span
-                    className={`font-semibold ${
-                      diagnostics?.permissionState === 'granted'
-                        ? 'text-[var(--success-primary)]'
-                        : 'text-[var(--warning-primary)]'
-                    }`}
-                  >
-                    {diagnostics?.permissionState === 'granted'
-                      ? '✓ Notifications enabled'
-                      : '⚠ Notifications ungranted'}
-                  </span>
-                </div>
-
-                {isAndroid && (
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-[var(--text-secondary)]">Precise Timing (Exact Alarm):</span>
-                    <span
-                      className={`font-semibold ${
-                        androidDiag?.canScheduleExactAlarms
-                          ? 'text-[var(--success-primary)]'
-                          : 'text-[var(--warning-primary)]'
+              {/* Theme Selection: System, Light, Dark */}
+              <div className="space-y-3">
+                <label className="text-xs font-semibold text-[var(--text-secondary)] block">
+                  Theme Appearance
+                </label>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { id: 'system' as const, label: 'System' },
+                    { id: 'light' as const, label: 'Light' },
+                    { id: 'dark' as const, label: 'Dark' },
+                  ].map((mode) => (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => setGeneralSettings({ ...generalSettings, theme: mode.id })}
+                      className={`p-3.5 rounded-[var(--radius-md)] border font-semibold text-xs transition-all cursor-pointer text-center ${
+                        generalSettings.theme === mode.id
+                          ? 'bg-[var(--bg-subtle)] border-[var(--text-primary)] text-[var(--text-primary)] shadow-sm'
+                          : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
                       }`}
                     >
-                      {androidDiag?.canScheduleExactAlarms ? '✓ Granted' : '⚠ Action required'}
-                    </span>
-                  </div>
-                )}
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              {/* Reminder Presentation Styles */}
-              <div className="space-y-4 pt-1">
-                <div className="space-y-2">
-                  <label className="text-xs font-semibold text-[var(--text-secondary)] block">
-                    Look Outside Reminder Style
+              {/* Time Format: 12-hour vs 24-hour */}
+              <div className="space-y-3 pt-2">
+                <label className="text-xs font-semibold text-[var(--text-secondary)] block">
+                  Time Format
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    { id: '12h' as const, label: '12-Hour (AM/PM)', example: '2:30 PM' },
+                    { id: '24h' as const, label: '24-Hour', example: '14:30' },
+                  ].map((fmt) => (
+                    <button
+                      key={fmt.id}
+                      type="button"
+                      onClick={() => setGeneralSettings({ ...generalSettings, timeFormat: fmt.id })}
+                      className={`p-3.5 rounded-[var(--radius-md)] border text-left text-xs transition-all cursor-pointer ${
+                        generalSettings.timeFormat === fmt.id
+                          ? 'bg-[var(--bg-subtle)] border-[var(--text-primary)] text-[var(--text-primary)] shadow-sm'
+                          : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
+                      }`}
+                    >
+                      <span className="block font-bold">{fmt.label}</span>
+                      <span className="text-[11px] text-[var(--text-muted)] block mt-0.5">
+                        e.g. {fmt.example}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Timezone Selection */}
+              <div className="space-y-2 pt-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-[var(--text-secondary)]">
+                    Timezone
                   </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setScreenBreakConfig({ ...screenBreakConfig, reminderStyle: 'fullscreen' })
-                      }
-                      className={`p-3 rounded-[var(--radius-md)] border text-left text-xs font-semibold transition-all cursor-pointer ${
-                        screenBreakConfig.reminderStyle !== 'notification'
-                          ? 'bg-[var(--screen-subtle)] border-[var(--screen-primary)] text-[var(--screen-primary)] shadow-sm'
-                          : 'bg-[var(--bg-subtle)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      <span className="block font-bold">Full-Screen Overlay</span>
-                      <span className="text-[11px] opacity-80 block mt-0.5">
-                        Automated overlay with countdown
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setScreenBreakConfig({ ...screenBreakConfig, reminderStyle: 'notification' })
-                      }
-                      className={`p-3 rounded-[var(--radius-md)] border text-left text-xs font-semibold transition-all cursor-pointer ${
-                        screenBreakConfig.reminderStyle === 'notification'
-                          ? 'bg-[var(--screen-subtle)] border-[var(--screen-primary)] text-[var(--screen-primary)] shadow-sm'
-                          : 'bg-[var(--bg-subtle)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      <span className="block font-bold">Notification Only</span>
-                      <span className="text-[11px] opacity-80 block mt-0.5">
-                        Alert banner only
-                      </span>
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <label className="text-xs font-semibold text-[var(--text-secondary)] block">
-                    Water Reminder Style
-                  </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setWaterConfig({ ...waterConfig, reminderStyle: 'popup' })
-                      }
-                      className={`p-3 rounded-[var(--radius-md)] border text-left text-xs font-semibold transition-all cursor-pointer ${
-                        waterConfig.reminderStyle === 'popup'
-                          ? 'bg-[var(--water-subtle)] border-[var(--water-primary)] text-[var(--water-primary)] shadow-sm'
-                          : 'bg-[var(--bg-subtle)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      <span className="block font-bold">Automated Popup</span>
-                      <span className="text-[11px] opacity-80 block mt-0.5">
-                        Disappears automatically
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setWaterConfig({ ...waterConfig, reminderStyle: 'notification' })
-                      }
-                      className={`p-3 rounded-[var(--radius-md)] border text-left text-xs font-semibold transition-all cursor-pointer ${
-                        waterConfig.reminderStyle !== 'popup'
-                          ? 'bg-[var(--water-subtle)] border-[var(--water-primary)] text-[var(--water-primary)] shadow-sm'
-                          : 'bg-[var(--bg-subtle)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      <span className="block font-bold">Notification Only</span>
-                      <span className="text-[11px] opacity-80 block mt-0.5">
-                        Alert banner alert
-                      </span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </Card>
-          )}
-
-          {/* 2. NOTIFICATIONS SUBTAB */}
-          {activeSubTab === 'notifications' && (
-            <Card variant="default" padding="lg" className="space-y-6">
-              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
-                <h2 className="font-semibold text-base text-[var(--text-primary)]">
-                  Notification Settings
-                </h2>
-                <Badge
-                  variant={diagnostics?.permissionState === 'granted' ? 'success' : 'danger'}
-                  dot
-                >
-                  {diagnostics?.permissionState === 'granted' ? 'Enabled' : 'Disabled'}
-                </Badge>
-              </div>
-
-              {diagnostics?.permissionState !== 'granted' && (
-                <div className="p-4 rounded-[var(--radius-lg)] bg-[var(--danger-subtle)] text-xs text-[var(--danger-primary)] space-y-1.5">
-                  <div className="flex items-center gap-2 font-semibold">
-                    <AlertTriangle className="w-4 h-4 shrink-0" />
-                    <span>Notifications are blocked or ungranted.</span>
-                  </div>
-                  <p className="text-[11px] opacity-90 leading-relaxed">
-                    {isAndroid
-                      ? 'EyeFlow requires Android notification permission (POST_NOTIFICATIONS) to alert you about water and screen breaks when the app is in the background or device is locked.'
-                      : 'EyeFlow cannot show reminder alerts until notification permission is enabled.'}
-                  </p>
-                </div>
-              )}
-
-              {/* Exact Alarm Notice for Android 12+ */}
-              {isAndroid && !androidDiag?.canScheduleExactAlarms && (
-                <div className="p-4 rounded-[var(--radius-lg)] bg-[var(--warning-subtle)] text-xs text-[var(--warning-primary)] space-y-2">
-                  <div className="flex items-center gap-2 font-semibold">
-                    <AlertTriangle className="w-4 h-4 shrink-0" />
-                    <span>Precise Alarms Permission Required</span>
-                  </div>
-                  <p className="text-[11px] leading-relaxed">
-                    Android 12+ restricts background timer precision by default. Allow "Alarms & Reminders" permission to ensure break schedules trigger on time.
-                  </p>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={handleOpenExactAlarmSettings}
-                    leftIcon={<Zap className="w-3.5 h-3.5" />}
-                  >
-                    Enable Precise Reminders
-                  </Button>
-                </div>
-              )}
-
-              <div className="space-y-4">
-                <Toggle
-                  label="Enable Notifications"
-                  description="Receive alert banners when it's time for water or a screen break."
-                  checked={notificationSettings.enabled}
-                  onChange={(checked) =>
-                    setNotificationSettings({ ...notificationSettings, enabled: checked })
-                  }
-                  variant="water"
-                />
-
-                <Toggle
-                  label="Audio Chimes"
-                  description="Play soft water chimes and meditation bells on reminders."
-                  checked={notificationSettings.soundEnabled}
-                  onChange={(checked) =>
-                    setNotificationSettings({ ...notificationSettings, soundEnabled: checked })
-                  }
-                  variant="water"
-                />
-              </div>
-
-              <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-wrap gap-2.5">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={handleRequestPermission}
-                  leftIcon={<Bell className="w-3.5 h-3.5" />}
-                >
-                  Request Notification Permission
-                </Button>
-
-                {isAndroid && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleOpenExactAlarmSettings}
-                    leftIcon={<Zap className="w-3.5 h-3.5" />}
-                  >
-                    Alarms & Reminders Settings
-                  </Button>
-                )}
-              </div>
-            </Card>
-          )}
-
-          {/* 3. ANDROID DIAGNOSTICS & TESTING SUBTAB */}
-          {activeSubTab === 'diagnostics' && isAndroid && (
-            <Card variant="default" padding="lg" className="space-y-6">
-              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
-                <div className="space-y-0.5">
-                  <h2 className="font-semibold text-base text-[var(--text-primary)]">
-                    Android Diagnostics & Testing
-                  </h2>
-                  <p className="text-xs text-[var(--text-secondary)]">
-                    Native Full-Screen Intent, AlarmManager status, and real background test.
-                  </p>
-                </div>
-                <Badge variant="water">Android Native</Badge>
-              </div>
-
-              {/* Status Summary */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1">
-                  <span className="text-[11px] text-[var(--text-muted)] block">Current Device Time</span>
-                  <span className="text-sm font-bold text-[var(--text-primary)]">
-                    {new Date(currentDeviceTimestamp).toLocaleTimeString()}
-                  </span>
-                </div>
-
-                <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1">
-                  <span className="text-[11px] text-[var(--text-muted)] block">Device & SDK</span>
-                  <span className="text-sm font-bold text-[var(--text-primary)]">
-                    {androidDiag?.manufacturer} {androidDiag?.model} (API {androidDiag?.sdkInt})
-                  </span>
-                </div>
-
-                <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1">
-                  <span className="text-[11px] text-[var(--text-muted)] block">Notification Permission</span>
-                  <span
-                    className={`text-sm font-bold ${
-                      androidDiag?.notificationPermission === 'granted'
-                        ? 'text-[var(--success-primary)]'
-                        : 'text-[var(--warning-primary)]'
-                    }`}
-                  >
-                    {androidDiag?.notificationPermission?.toUpperCase() || 'UNKNOWN'}
-                  </span>
-                </div>
-
-                <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1">
-                  <span className="text-[11px] text-[var(--text-muted)] block">Precise Reminders (Exact Alarm)</span>
-                  <span
-                    className={`text-sm font-bold ${
-                      androidDiag?.canScheduleExactAlarms
-                        ? 'text-[var(--success-primary)]'
-                        : 'text-[var(--warning-primary)]'
-                    }`}
-                  >
-                    {androidDiag?.canScheduleExactAlarms ? 'GRANTED' : 'DENIED / ACTION REQUIRED'}
-                  </span>
-                </div>
-
-                <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1">
-                  <span className="text-[11px] text-[var(--text-muted)] block">Next Water Occurrence</span>
-                  <span className="text-sm font-bold text-[var(--water-primary)]">
-                    {nextWaterSlot?.time ? `${nextWaterSlot.time} (${nextWaterSlot.status})` : 'None / Inactive'}
-                  </span>
-                </div>
-
-                <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1">
-                  <span className="text-[11px] text-[var(--text-muted)] block">Next Screen Occurrence</span>
-                  <span className="text-sm font-bold text-[var(--screen-primary)]">
-                    {nextScreenSlot?.time ? `${nextScreenSlot.time} (${nextScreenSlot.status})` : 'None / Inactive'}
-                  </span>
-                </div>
-
-                <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1">
-                  <span className="text-[11px] text-[var(--text-muted)] block">Battery Optimization</span>
-                  <span
-                    className={`text-sm font-bold ${
-                      androidDiag?.isIgnoringBatteryOptimizations
-                        ? 'text-[var(--success-primary)]'
-                        : 'text-[var(--warning-primary)]'
-                    }`}
-                  >
-                    {androidDiag?.isIgnoringBatteryOptimizations ? 'OPTIMAL' : 'STANDARD'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Pending Native Alarms */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs font-semibold text-[var(--text-primary)]">
-                  <span>Pending Notifications ({androidDiag?.pendingCount ?? 0})</span>
                   <button
-                    onClick={refreshDiagnostics}
-                    className="text-[11px] text-[var(--water-primary)] hover:underline cursor-pointer"
+                    type="button"
+                    onClick={handleAutoDetectTimezone}
+                    className="text-[11px] text-[var(--water-primary)] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
                   >
-                    Refresh
+                    <Globe className="w-3 h-3" /> Auto-Detect Device Timezone
                   </button>
                 </div>
-
-                {androidDiag?.pendingList && androidDiag.pendingList.length > 0 ? (
-                  <div className="space-y-1.5 max-h-36 overflow-y-auto">
-                    {androidDiag.pendingList.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between px-3 py-2 rounded bg-[var(--bg-subtle)] text-xs"
-                      >
-                        <span className="font-medium text-[var(--text-primary)]">{item.title}</span>
-                        <span className="text-[11px] text-[var(--text-muted)]">{item.at}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-[var(--text-muted)] p-3 rounded bg-[var(--bg-subtle)]">
-                    No pending notifications in queue.
-                  </p>
-                )}
+                <select
+                  value={generalSettings.timezone || 'UTC'}
+                  onChange={(e) => setGeneralSettings({ ...generalSettings, timezone: e.target.value })}
+                  className="form-input text-xs"
+                >
+                  {COMMON_TIMEZONES.map((tz) => (
+                    <option key={tz.value} value={tz.value}>
+                      {tz.label}
+                    </option>
+                  ))}
+                  {!COMMON_TIMEZONES.find((tz) => tz.value === generalSettings.timezone) && (
+                    <option value={generalSettings.timezone}>{generalSettings.timezone}</option>
+                  )}
+                </select>
+                <p className="text-[11px] text-[var(--text-muted)]">
+                  Used for calculating scheduled daily start/end occurrences.
+                </p>
               </div>
 
-              {/* Last Scheduling Result / Error */}
-              <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1 text-xs">
-                <span className="font-semibold text-[var(--text-secondary)] block">Last Scheduling Result:</span>
-                <p className="text-[var(--text-primary)]">{androidDiag?.lastSchedulingResult || 'None'}</p>
-                {androidDiag?.lastSchedulingError && (
-                  <p className="text-[var(--danger-primary)] font-semibold mt-1">
-                    Error: {androidDiag.lastSchedulingError}
-                  </p>
-                )}
-              </div>
-
-              {/* Background Test Actions */}
-              <div className="pt-4 border-t border-[var(--border-subtle)] space-y-3">
-                <div className="space-y-1">
-                  <span className="text-xs font-bold text-[var(--text-primary)] block">
-                    ⚡ Background Reminder Verification
-                  </span>
-                  <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
-                    Test background delivery by scheduling a notification for 30 seconds or 2 minutes ahead, then switch apps or lock your phone.
-                  </p>
-                </div>
-
-                {testResultMsg && (
-                  <div className="p-3 rounded-[var(--radius-md)] bg-[var(--water-subtle)] border border-[var(--water-border)] text-xs text-[var(--water-primary)] font-medium leading-relaxed animate-fade-in">
-                    {testResultMsg}
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={isTestingAlarm}
-                    onClick={() => handleTest30SecReminder('water')}
-                    leftIcon={<Zap className="w-3.5 h-3.5" />}
-                  >
-                    Water in 30s
-                  </Button>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={isTestingAlarm}
-                    onClick={() => handleTest30SecReminder('screen')}
-                    leftIcon={<Eye className="w-3.5 h-3.5" />}
-                  >
-                    Screen in 30s
-                  </Button>
-
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={isTestingAlarm}
-                    onClick={handleTest2MinExactReminder}
-                    leftIcon={<Zap className="w-3.5 h-3.5" />}
-                  >
-                    Precise in 2m
-                  </Button>
-                </div>
-
-                <div className="flex flex-wrap gap-2 pt-2">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleOpenExactAlarmSettings}
-                    leftIcon={<Zap className="w-3.5 h-3.5" />}
-                  >
-                    Enable Precise Reminders
-                  </Button>
-
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleOpenBatterySettings}
-                    leftIcon={<Smartphone className="w-3.5 h-3.5" />}
-                  >
-                    Battery Optimization Settings
-                  </Button>
-                </div>
-              </div>
-            </Card>
-          )}
-
-          {/* 4. GENERAL SUBTAB */}
-          {activeSubTab === 'general' && (
-            <Card variant="default" padding="lg" className="space-y-5">
-              <h2 className="font-semibold text-base text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
-                General Settings
-              </h2>
-
-              <div className="space-y-4">
+              {/* Startup & Tray Options */}
+              <div className="space-y-4 pt-4 border-t border-[var(--border-subtle)]">
                 <Toggle
                   label="Start on system startup"
-                  description="Automatically start reminders when system boots up."
+                  description="Automatically start reminders when your computer or device starts."
                   checked={generalSettings.startOnStartup}
                   onChange={(checked) =>
                     setGeneralSettings({ ...generalSettings, startOnStartup: checked })
@@ -646,7 +401,7 @@ export const SettingsPage: React.FC = () => {
 
                 <Toggle
                   label="Minimize to system tray"
-                  description="Closing window minimizes EyeFlow to the notification tray."
+                  description="Closing window minimizes PauseFlow to the system tray."
                   checked={generalSettings.minimizeToTray}
                   onChange={(checked) =>
                     setGeneralSettings({ ...generalSettings, minimizeToTray: checked })
@@ -656,130 +411,688 @@ export const SettingsPage: React.FC = () => {
             </Card>
           )}
 
-          {/* 5. WATER SUBTAB */}
-          {activeSubTab === 'water' && (
-            <Card variant="default" padding="lg" className="space-y-5">
-              <h2 className="font-semibold text-base text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
-                Water Schedule
-              </h2>
-
-              <div className="grid grid-cols-2 gap-4">
-                <TimePicker
-                  label="Start time"
-                  value={waterConfig.startTime}
-                  onChange={(e) => setWaterConfig({ ...waterConfig, startTime: e.target.value })}
-                />
-                <TimePicker
-                  label="End time"
-                  value={waterConfig.endTime}
-                  onChange={(e) => setWaterConfig({ ...waterConfig, endTime: e.target.value })}
-                />
+          {/* ========================================================
+              2. NOTIFICATIONS & AUDIO SUBTAB
+              ======================================================== */}
+          {activeSubTab === 'notifications' && (
+            <Card variant="default" padding="lg" className="space-y-6">
+              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
+                <div>
+                  <h2 className="font-semibold text-base text-[var(--text-primary)]">
+                    Notification & Audio Settings
+                  </h2>
+                  <p className="text-xs text-[var(--text-secondary)]">
+                    OS permission vs user in-app preference and sound styles
+                  </p>
+                </div>
+                <Badge
+                  variant={diagnostics?.permissionState === 'granted' ? 'success' : 'danger'}
+                  dot
+                >
+                  OS {diagnostics?.permissionState === 'granted' ? 'Granted' : 'Ungranted'}
+                </Badge>
               </div>
-            </Card>
-          )}
 
-          {/* 6. SCREEN BREAK SUBTAB */}
-          {activeSubTab === 'screen' && (
-            <Card variant="default" padding="lg" className="space-y-5">
-              <h2 className="font-semibold text-base text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
-                Look Outside Schedule
-              </h2>
-
-              <div className="grid grid-cols-2 gap-4">
-                <TimePicker
-                  label="Start time"
-                  value={screenBreakConfig.startTime}
-                  onChange={(e) =>
-                    setScreenBreakConfig({ ...screenBreakConfig, startTime: e.target.value })
-                  }
-                />
-                <TimePicker
-                  label="End time"
-                  value={screenBreakConfig.endTime}
-                  onChange={(e) =>
-                    setScreenBreakConfig({ ...screenBreakConfig, endTime: e.target.value })
-                  }
-                />
-              </div>
-            </Card>
-          )}
-
-          {/* 7. THEME SUBTAB */}
-          {activeSubTab === 'appearance' && (
-            <Card variant="default" padding="lg" className="space-y-5">
-              <h2 className="font-semibold text-base text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
-                Appearance
-              </h2>
-
-              <div className="grid grid-cols-3 gap-3">
-                {[
-                  { id: 'light' as const, label: 'Light' },
-                  { id: 'dark' as const, label: 'Dark' },
-                  { id: 'system' as const, label: 'System' },
-                ].map((mode) => (
-                  <button
-                    key={mode.id}
-                    onClick={() => setGeneralSettings({ ...generalSettings, theme: mode.id })}
-                    className={`p-3.5 rounded-[var(--radius-md)] border font-semibold text-xs transition-all cursor-pointer ${
-                      generalSettings.theme === mode.id
-                        ? 'bg-[var(--bg-subtle)] border-[var(--text-primary)] text-[var(--text-primary)] shadow-sm'
-                        : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+              {/* OS Permission State Display (SEPARATE from App Preference) */}
+              <div className="p-4 rounded-[var(--radius-lg)] bg-[var(--bg-subtle)] border border-[var(--border-subtle)] space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <span className="text-xs font-bold text-[var(--text-primary)] block">
+                      Operating System Permission State
+                    </span>
+                    <span className="text-[11px] text-[var(--text-secondary)] block">
+                      Actual device-level notification authorization
+                    </span>
+                  </div>
+                  <span
+                    className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                      diagnostics?.permissionState === 'granted'
+                        ? 'bg-[var(--success-subtle)] text-[var(--success-primary)]'
+                        : 'bg-[var(--danger-subtle)] text-[var(--danger-primary)]'
                     }`}
                   >
-                    {mode.label}
-                  </button>
-                ))}
+                    {diagnostics?.permissionState === 'granted' ? '✓ SYSTEM AUTHORIZED' : '⚠ PERMISSION REQUIRED'}
+                  </span>
+                </div>
+
+                {diagnostics?.permissionState !== 'granted' && (
+                  <div className="pt-2 flex flex-wrap gap-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleRequestPermission}
+                      leftIcon={<Bell className="w-3.5 h-3.5" />}
+                    >
+                      Request OS Permission
+                    </Button>
+                    {isAndroid && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleOpenExactAlarmSettings}
+                        leftIcon={<Zap className="w-3.5 h-3.5" />}
+                      >
+                        Alarms & Reminders Settings
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* In-App User Preferences */}
+              <div className="space-y-4 pt-2">
+                <Toggle
+                  label="App Notifications Enabled"
+                  description="Enable or disable delivery of reminder banners within PauseFlow."
+                  checked={notificationSettings.enabled}
+                  onChange={(checked) =>
+                    setNotificationSettings({ ...notificationSettings, enabled: checked })
+                  }
+                  variant="water"
+                />
+
+                <Toggle
+                  label="Sound Enabled"
+                  description="Play relaxing audio chimes or meditation bells on scheduled alerts."
+                  checked={notificationSettings.soundEnabled}
+                  onChange={(checked) =>
+                    setNotificationSettings({ ...notificationSettings, soundEnabled: checked })
+                  }
+                  variant="water"
+                />
+              </div>
+
+              {/* Water Reminder Sound Selector */}
+              <div className="space-y-3 pt-4 border-t border-[var(--border-subtle)]">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[var(--text-primary)]">
+                    Water Reminder Sound
+                  </label>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handlePreviewWaterSound(notificationSettings.waterSound)}
+                    leftIcon={<Volume2 className="w-3.5 h-3.5 text-[var(--water-primary)]" />}
+                  >
+                    Preview Sound
+                  </Button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {WATER_SOUND_OPTIONS.map((snd) => {
+                    const isSelected = notificationSettings.waterSound === snd.id;
+                    return (
+                      <div
+                        key={snd.id}
+                        onClick={() =>
+                          setNotificationSettings({ ...notificationSettings, waterSound: snd.id })
+                        }
+                        className={`p-3 rounded-[var(--radius-md)] border text-left transition-all cursor-pointer flex items-center justify-between ${
+                          isSelected
+                            ? 'bg-[var(--water-subtle)] border-[var(--water-primary)] text-[var(--text-primary)] shadow-sm'
+                            : 'bg-[var(--bg-subtle)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
+                        }`}
+                      >
+                        <div>
+                          <span className="block font-semibold text-xs text-[var(--text-primary)]">
+                            {snd.label}
+                          </span>
+                          <span className="text-[11px] text-[var(--text-muted)]">{snd.desc}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePreviewWaterSound(snd.id);
+                          }}
+                          className="p-1.5 rounded-full hover:bg-[var(--bg-muted)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+                          title="Play preview"
+                        >
+                          {snd.id === 'none' ? (
+                            <VolumeX className="w-3.5 h-3.5" />
+                          ) : (
+                            <Volume2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Look Outside Reminder Sound Selector */}
+              <div className="space-y-3 pt-4 border-t border-[var(--border-subtle)]">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[var(--text-primary)]">
+                    Look Outside Reminder Sound
+                  </label>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      handlePreviewLookOutsideSound(notificationSettings.lookOutsideSound)
+                    }
+                    leftIcon={<Volume2 className="w-3.5 h-3.5 text-[var(--screen-primary)]" />}
+                  >
+                    Preview Sound
+                  </Button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {LOOK_OUTSIDE_SOUND_OPTIONS.map((snd) => {
+                    const isSelected = notificationSettings.lookOutsideSound === snd.id;
+                    return (
+                      <div
+                        key={snd.id}
+                        onClick={() =>
+                          setNotificationSettings({
+                            ...notificationSettings,
+                            lookOutsideSound: snd.id,
+                          })
+                        }
+                        className={`p-3 rounded-[var(--radius-md)] border text-left transition-all cursor-pointer flex items-center justify-between ${
+                          isSelected
+                            ? 'bg-[var(--screen-subtle)] border-[var(--screen-primary)] text-[var(--text-primary)] shadow-sm'
+                            : 'bg-[var(--bg-subtle)] border-[var(--border-subtle)] text-[var(--text-secondary)] hover:border-[var(--text-muted)]'
+                        }`}
+                      >
+                        <div>
+                          <span className="block font-semibold text-xs text-[var(--text-primary)]">
+                            {snd.label}
+                          </span>
+                          <span className="text-[11px] text-[var(--text-muted)]">{snd.desc}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePreviewLookOutsideSound(snd.id);
+                          }}
+                          className="p-1.5 rounded-full hover:bg-[var(--bg-muted)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+                          title="Play preview"
+                        >
+                          {snd.id === 'none' ? (
+                            <VolumeX className="w-3.5 h-3.5" />
+                          ) : (
+                            <Volume2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </Card>
           )}
 
-          {/* 8. PRIVACY SUBTAB */}
-          {activeSubTab === 'privacy' && (
-            <Card variant="default" padding="lg" className="space-y-5">
-              <h2 className="font-semibold text-base text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
-                Privacy & Data
-              </h2>
 
-              <div className="flex items-center justify-between p-4 rounded-[var(--radius-md)] bg-[var(--bg-subtle)]">
+
+          {/* ========================================================
+              4. PAUSE REMINDERS SUBTAB
+              ======================================================== */}
+          {activeSubTab === 'pause' && (
+            <Card variant="default" padding="lg" className="space-y-6">
+              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
                 <div>
-                  <span className="text-xs font-semibold text-[var(--text-primary)] block">
-                    Local Data Backup
+                  <h2 className="font-semibold text-base text-[var(--text-primary)]">
+                    Pause Reminders
+                  </h2>
+                  <p className="text-xs text-[var(--text-secondary)]">
+                    Temporarily silence all hydration and screen break alerts
+                  </p>
+                </div>
+                <Badge variant={pauseState.isPaused ? 'warning' : 'success'}>
+                  {pauseState.isPaused ? 'Paused' : 'Active'}
+                </Badge>
+              </div>
+
+              {pauseState.isPaused && (
+                <div className="p-4 rounded-[var(--radius-lg)] bg-[var(--warning-subtle)] border border-[var(--warning-border)] text-xs text-[var(--warning-primary)] flex items-center justify-between">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <Clock className="w-4 h-4" />
+                    <span>
+                      Reminders paused until{' '}
+                      {pauseState.pauseUntil
+                        ? new Date(pauseState.pauseUntil).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                        : 'later'}
+                    </span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPauseDuration(null)}
+                    leftIcon={<Play className="w-3 h-3" />}
+                  >
+                    Resume Now
+                  </Button>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  onClick={() => setPauseDuration(30)}
+                  className="p-4 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-muted)] border border-[var(--border-subtle)] text-left transition-all cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-[var(--warning-primary)]" />
+                    <span className="font-bold text-xs text-[var(--text-primary)]">30 Minutes</span>
+                  </div>
+                  <span className="text-[11px] text-[var(--text-muted)] mt-1 block">
+                    Quick pause for short meetings or phone calls.
                   </span>
-                  <span className="text-[11px] text-[var(--text-muted)]">
-                    Download settings & logs JSON backup
+                </button>
+
+                <button
+                  onClick={() => setPauseDuration(60)}
+                  className="p-4 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-muted)] border border-[var(--border-subtle)] text-left transition-all cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-[var(--warning-primary)]" />
+                    <span className="font-bold text-xs text-[var(--text-primary)]">1 Hour</span>
+                  </div>
+                  <span className="text-[11px] text-[var(--text-muted)] mt-1 block">
+                    Focus block for deep work sessions.
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => setPauseDuration('tomorrow')}
+                  className="p-4 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-muted)] border border-[var(--border-subtle)] text-left transition-all cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-[var(--screen-primary)]" />
+                    <span className="font-bold text-xs text-[var(--text-primary)]">Today</span>
+                  </div>
+                  <span className="text-[11px] text-[var(--text-muted)] mt-1 block">
+                    Silence remainder of the day (resumes tomorrow 8:00 AM).
+                  </span>
+                </button>
+
+                <div className="p-4 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] border border-[var(--border-subtle)] space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Sliders className="w-4 h-4 text-[var(--water-primary)]" />
+                    <span className="font-bold text-xs text-[var(--text-primary)]">Custom Duration</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      max="1440"
+                      value={customPauseMins}
+                      onChange={(e) => setCustomPauseMins(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="form-input text-xs py-1.5 px-2.5 flex-1"
+                      placeholder="Minutes"
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setPauseDuration(customPauseMins)}
+                    >
+                      Pause
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {/* ========================================================
+              5. PRIVACY & ACCOUNT SUBTAB
+              ======================================================== */}
+          {activeSubTab === 'privacy' && (
+            <Card variant="default" padding="lg" className="space-y-6">
+              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
+                <div>
+                  <h2 className="font-semibold text-base text-[var(--text-primary)]">
+                    Privacy & Account
+                  </h2>
+                  <p className="text-xs text-[var(--text-secondary)]">
+                    Account details, multi-device synchronization, and data lifecycle
+                  </p>
+                </div>
+                <Badge variant="water">Isolated</Badge>
+              </div>
+
+              {/* 1. Account Section */}
+              <div className="p-4 rounded-[var(--radius-lg)] bg-[var(--bg-subtle)] border border-[var(--border-subtle)] space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-[var(--water-subtle)] text-[var(--water-primary)] flex items-center justify-center font-bold">
+                    <User className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-[var(--text-primary)]">
+                      {currentUser?.display_name || 'PauseFlow Member'}
+                    </h3>
+                    <p className="text-[11px] text-[var(--text-muted)]">
+                      {currentUser?.email || 'Local User'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs pt-1 border-t border-[var(--border-subtle)]">
+                  <div>
+                    <span className="text-[11px] text-[var(--text-muted)] block">User ID:</span>
+                    <span className="font-mono text-[11px] text-[var(--text-primary)]">
+                      {currentUser?.id || 'guest'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-[var(--text-muted)] block">Member Since:</span>
+                    <span className="text-[11px] text-[var(--text-primary)]">
+                      {currentUser?.created_at
+                        ? new Date(currentUser.created_at).toLocaleDateString()
+                        : 'Today'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. Data Synchronization */}
+              <div className="p-4 rounded-[var(--radius-lg)] bg-[var(--bg-subtle)] border border-[var(--border-subtle)] space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <span className="text-xs font-bold text-[var(--text-primary)] block">
+                      Data Synchronization
+                    </span>
+                    <span className="text-[11px] text-[var(--text-secondary)]">
+                      Last synced: {lastSyncTime}
+                    </span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleManualSync}
+                    disabled={isSyncing}
+                    leftIcon={<RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />}
+                  >
+                    {isSyncing ? 'Syncing...' : 'Sync Now'}
+                  </Button>
+                </div>
+
+                <div className="pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold text-[var(--text-primary)] block">
+                      Download Settings Backup
+                    </span>
+                    <span className="text-[11px] text-[var(--text-muted)]">
+                      Export all user preferences and logs as JSON
+                    </span>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={exportDataJSON}
+                    leftIcon={<Download className="w-3.5 h-3.5" />}
+                  >
+                    Export JSON
+                  </Button>
+                </div>
+              </div>
+
+              {/* 3. Danger Zone: Delete Account */}
+              <div className="p-4 rounded-[var(--radius-lg)] bg-rose-500/5 border border-rose-500/20 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xs font-bold text-rose-500">Delete Account</h3>
+                    <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                      Permanently purge all sync configurations, reminder logs, and user settings.
+                    </p>
+                  </div>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => {
+                      setDeleteError(null);
+                      setDeleteConfirmText('');
+                      setDeletePassword('');
+                      setDeleteModalOpen(true);
+                    }}
+                    leftIcon={<Trash2 className="w-3.5 h-3.5" />}
+                  >
+                    Delete Account
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {/* ========================================================
+              6. ANDROID DIAGNOSTICS SUBTAB (Android Only)
+              ======================================================== */}
+          {activeSubTab === 'diagnostics' && isAndroid && (
+            <Card variant="default" padding="lg" className="space-y-6">
+              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
+                <div>
+                  <h2 className="font-semibold text-base text-[var(--text-primary)]">
+                    Android Diagnostics
+                  </h2>
+                  <p className="text-xs text-[var(--text-secondary)]">
+                    Exact alarms, background intents, and OS diagnostics
+                  </p>
+                </div>
+                <Badge variant="water">Android Native</Badge>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1">
+                  <span className="text-[11px] text-[var(--text-muted)] block">SDK & Device</span>
+                  <span className="text-sm font-bold text-[var(--text-primary)]">
+                    {androidDiag?.manufacturer} {androidDiag?.model} (API {androidDiag?.sdkInt})
                   </span>
                 </div>
+
+                <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] space-y-1">
+                  <span className="text-[11px] text-[var(--text-muted)] block">Exact Alarm Permission</span>
+                  <span
+                    className={`text-sm font-bold ${
+                      androidDiag?.canScheduleExactAlarms
+                        ? 'text-[var(--success-primary)]'
+                        : 'text-[var(--warning-primary)]'
+                    }`}
+                  >
+                    {androidDiag?.canScheduleExactAlarms ? 'GRANTED ✓' : 'ACTION REQUIRED ⚠'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="pt-2 flex flex-wrap gap-2">
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   size="sm"
-                  onClick={exportDataJSON}
-                  leftIcon={<Download className="w-3.5 h-3.5" />}
+                  onClick={handleOpenExactAlarmSettings}
+                  leftIcon={<Zap className="w-3.5 h-3.5" />}
                 >
-                  Export Data
+                  Enable Precise Reminders
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleOpenBatterySettings}
+                  leftIcon={<Smartphone className="w-3.5 h-3.5" />}
+                >
+                  Battery Optimization
                 </Button>
               </div>
             </Card>
           )}
 
-          {/* 9. ABOUT SUBTAB */}
-          {activeSubTab === 'about' && (
-            <Card variant="default" padding="lg" className="space-y-3 text-center py-6">
-              <div className="w-12 h-12 rounded-xl bg-[var(--text-primary)] text-[var(--bg-page)] flex items-center justify-center mx-auto shadow-sm">
-                <Sparkles className="w-6 h-6" />
+          {/* ========================================================
+              6.5 CROSS-DEVICE SYNC SUBTAB
+              ======================================================== */}
+          {activeSubTab === 'syncDiagnostics' && (
+            <Card variant="default" padding="lg" className="space-y-6">
+              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
+                <div>
+                  <h2 className="font-semibold text-base text-[var(--text-primary)]">
+                    Cross-Device Synchronization
+                  </h2>
+                  <p className="text-xs text-[var(--text-secondary)]">
+                    Real-time cloud replication across Windows, Web, and Android
+                  </p>
+                </div>
+                <Badge variant="water">Supabase Cloud</Badge>
               </div>
+
+              <div className="p-4 rounded-2xl bg-[var(--bg-subtle)] border border-[var(--border-subtle)] space-y-3">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-[var(--text-muted)]">Live Realtime Channel:</span>
+                  <span className="font-bold text-emerald-400">Connected ✓</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-[var(--text-muted)]">Cloud Source of Truth:</span>
+                  <span className="font-mono text-sky-400">hwrsvdrhqenraeuqfqle.supabase.co</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-[var(--text-muted)]">Account ID:</span>
+                  <span className="font-mono text-[var(--text-primary)] truncate max-w-[200px]">{currentUser?.id || 'Anonymous'}</span>
+                </div>
+              </div>
+
+              <div className="pt-2 flex flex-wrap gap-3">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => setSyncModalOpen(true)}
+                  leftIcon={<Activity className="w-3.5 h-3.5" />}
+                >
+                  Open Live Sync Diagnostics
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={async () => {
+                    if (currentUser?.id) {
+                      setIsSyncing(true);
+                      await syncService.syncUserAccount(currentUser.id);
+                      setIsSyncing(false);
+                      showToast('Cross-device data reconciled from cloud ✓', 'success');
+                    }
+                  }}
+                  disabled={isSyncing}
+                  leftIcon={<RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />}
+                >
+                  Force Cloud Sync Now
+                </Button>
+              </div>
+            </Card>
+          )}
+
+          {/* ========================================================
+              7. ABOUT SUBTAB
+              ======================================================== */}
+          {activeSubTab === 'about' && (
+            <Card variant="default" padding="lg" className="space-y-4 text-center py-8">
+              <img
+                src="/icon.png"
+                alt="PauseFlow"
+                className="w-14 h-14 rounded-2xl object-contain mx-auto shadow-md"
+              />
               <div className="space-y-1">
-                <h3 className="text-lg font-bold text-[var(--text-primary)]">EyeFlow</h3>
+                <h3 className="text-lg font-bold text-[var(--text-primary)]">PauseFlow</h3>
                 <p className="text-xs text-[var(--text-muted)]">
                   Drink. Look Away. Feel Better.
                 </p>
-                <p className="text-xs text-[var(--text-secondary)] pt-1 max-w-xs mx-auto">
-                  A calm, simple companion for staying hydrated and relaxing your eyes.
+                <p className="text-xs text-[var(--text-secondary)] pt-2 max-w-sm mx-auto leading-relaxed">
+                  A calm, multi-user wellness companion designed to keep you hydrated and relaxed through intelligent timed water and screen breaks.
                 </p>
               </div>
             </Card>
           )}
         </div>
       </div>
+
+      {/* ==========================================
+          MODAL: DELETE ACCOUNT CONFIRMATION
+          ========================================== */}
+      {deleteModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
+          <div className="relative w-full max-w-md bg-[var(--bg-secondary)] border border-rose-500/30 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-5 animate-scale-up">
+            <button
+              onClick={() => setDeleteModalOpen(false)}
+              className="absolute top-4 right-4 p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-full hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="space-y-2">
+              <div className="w-10 h-10 rounded-2xl bg-rose-500/15 text-rose-500 flex items-center justify-center">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <h3 className="text-xl font-bold text-rose-500">Permanently Delete Account</h3>
+              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                This action is irreversible. All of your synced break schedules, logs, and settings will be permanently erased.
+              </p>
+            </div>
+
+            {deleteError && (
+              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{deleteError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleDeleteAccount} className="space-y-4">
+              <div className="form-group">
+                <label className="form-label text-xs">
+                  Type <strong className="text-rose-400 font-mono">DELETE</strong> to confirm
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  placeholder="DELETE"
+                  className="form-input text-sm font-mono"
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label text-xs">Account Password</label>
+                <input
+                  type="password"
+                  value={deletePassword}
+                  onChange={(e) => setDeletePassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="form-input text-sm"
+                  required
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  onClick={() => setDeleteModalOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  type="submit"
+                  disabled={
+                    deleteLoading ||
+                    deleteConfirmText.trim().toUpperCase() !== 'DELETE' ||
+                    !deletePassword
+                  }
+                >
+                  {deleteLoading ? 'Deleting Account...' : 'Permanently Delete'}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Cross-Device Realtime Sync Diagnostics Panel */}
+      <SyncDiagnosticsPanel
+        isOpen={syncModalOpen}
+        onClose={() => setSyncModalOpen(false)}
+      />
     </div>
   );
 };

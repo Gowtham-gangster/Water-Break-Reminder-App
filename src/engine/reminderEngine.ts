@@ -77,7 +77,7 @@ export class ReminderEngineService {
     const [endH, endM] = (endTime || '22:00').split(':').map(Number);
     const startMinutes = startH * 60 + startM;
     const endMinutes = endH * 60 + endM;
-    const interval = Math.max(5, intervalMinutes || 30);
+    const interval = Math.max(1, intervalMinutes || 30);
 
     const occurrences: Array<{ timeString: string; timestamp: number }> = [];
 
@@ -100,7 +100,7 @@ export class ReminderEngineService {
 
   /**
    * Dynamically calculates the next upcoming occurrence based on device clock (Date.now())
-   * Handles before-start, mid-day interval anchoring, exact boundaries, after-end, and tomorrow rollover.
+   * Handles before-start, mid-day interval anchoring, exact boundaries, after-end, active days, and rollover.
    * STRICT GUARANTEE: Never returns a timestamp in the past.
    */
   public findNextOccurrence(
@@ -109,87 +109,101 @@ export class ReminderEngineService {
     endTime: string,
     intervalMinutes: number,
     isQuietTime?: (timeMinutes: number) => boolean,
-    isSlotCompleted?: (timestamp: number) => boolean
-  ): { timeString: string; timestamp: number; isTomorrow: boolean } | null {
+    isSlotCompleted?: (timestamp: number) => boolean,
+    activeDays?: number[]
+  ): { timeString: string; timestamp: number; isTomorrow: boolean; daysAway?: number } | null {
+    const validDays = activeDays && activeDays.length > 0 ? activeDays : [0, 1, 2, 3, 4, 5, 6];
     const currentTimestamp = now.getTime();
     const [startH, startM] = (startTime || '08:00').split(':').map(Number);
     const [endH, endM] = (endTime || '22:00').split(':').map(Number);
 
     const startMinutes = startH * 60 + startM;
-    const interval = Math.max(5, intervalMinutes || 30);
+    const interval = Math.max(1, intervalMinutes || 30);
     const intervalMs = interval * 60 * 1000;
 
-    const todayStartDate = new Date(now);
-    todayStartDate.setHours(startH, startM, 0, 0);
-    const todayStartTimestamp = todayStartDate.getTime();
+    const isTodayActive = validDays.includes(now.getDay());
 
-    const todayEndDate = new Date(now);
-    todayEndDate.setHours(endH, endM, 0, 0);
-    const todayEndTimestamp = todayEndDate.getTime();
+    if (isTodayActive) {
+      const todayStartDate = new Date(now);
+      todayStartDate.setHours(startH, startM, 0, 0);
+      const todayStartTimestamp = todayStartDate.getTime();
 
-    // 1. Before today's start time -> next occurrence is today's start
-    if (currentTimestamp < todayStartTimestamp) {
-      const m = startMinutes;
-      if (!isQuietTime || !isQuietTime(m)) {
+      const todayEndDate = new Date(now);
+      todayEndDate.setHours(endH, endM, 0, 0);
+      const todayEndTimestamp = todayEndDate.getTime();
+
+      // 1. Before today's start time -> next occurrence is today's start
+      if (currentTimestamp < todayStartTimestamp) {
+        const m = startMinutes;
+        if (!isQuietTime || !isQuietTime(m)) {
+          return {
+            timeString: startTime,
+            timestamp: todayStartTimestamp,
+            isTomorrow: false,
+            daysAway: 0,
+          };
+        }
+      }
+
+      // 2. Within today's active window [todayStartTimestamp, todayEndTimestamp]
+      if (currentTimestamp <= todayEndTimestamp) {
+        const elapsedMs = Math.max(0, currentTimestamp - todayStartTimestamp);
+        const intervalsElapsed = Math.floor(elapsedMs / intervalMs);
+
+        // Check candidate occurrences starting from the current interval index
+        for (let idx = intervalsElapsed; ; idx++) {
+          const candidateTimestamp = todayStartTimestamp + idx * intervalMs;
+
+          // If candidate exceeds today's end time, break to next active day calculation
+          if (candidateTimestamp > todayEndTimestamp) {
+            break;
+          }
+
+          // STRICT REQUIREMENT: Candidate MUST be in the future (strictly > currentTimestamp + 1000ms)
+          // Never return a past timestamp or a timestamp that was due in a previous session
+          if (candidateTimestamp > currentTimestamp + 1000) {
+            const candidateDate = new Date(candidateTimestamp);
+            const candM = candidateDate.getHours() * 60 + candidateDate.getMinutes();
+
+            const timeString = `${String(candidateDate.getHours()).padStart(2, '0')}:${String(
+              candidateDate.getMinutes()
+            ).padStart(2, '0')}`;
+
+            if (isQuietTime && isQuietTime(candM)) {
+              continue;
+            }
+
+            if (isSlotCompleted && isSlotCompleted(candidateTimestamp)) {
+              continue;
+            }
+
+            return {
+              timeString,
+              timestamp: candidateTimestamp,
+              isTomorrow: false,
+              daysAway: 0,
+            };
+          }
+        }
+      }
+    }
+
+    // 3. Find the nearest future active day (offset 1 to 7)
+    for (let offset = 1; offset <= 7; offset++) {
+      const futureDate = new Date(now);
+      futureDate.setDate(futureDate.getDate() + offset);
+      if (validDays.includes(futureDate.getDay())) {
+        futureDate.setHours(startH, startM, 0, 0);
         return {
           timeString: startTime,
-          timestamp: todayStartTimestamp,
-          isTomorrow: false,
+          timestamp: futureDate.getTime(),
+          isTomorrow: offset === 1,
+          daysAway: offset,
         };
       }
     }
 
-    // 2. Within today's active window [todayStartTimestamp, todayEndTimestamp]
-    if (currentTimestamp <= todayEndTimestamp) {
-      const elapsedMs = Math.max(0, currentTimestamp - todayStartTimestamp);
-      const intervalsElapsed = Math.floor(elapsedMs / intervalMs);
-
-      // Check candidate occurrences starting from the current interval index
-      for (let idx = intervalsElapsed; ; idx++) {
-        const candidateTimestamp = todayStartTimestamp + idx * intervalMs;
-
-        // If candidate exceeds today's end time, break to tomorrow calculation
-        if (candidateTimestamp > todayEndTimestamp) {
-          break;
-        }
-
-        // STRICT REQUIREMENT: Candidate MUST be in the future (strictly > currentTimestamp + 1000ms)
-        // Never return a past timestamp or a timestamp that was due in a previous session
-        if (candidateTimestamp > currentTimestamp + 1000) {
-          const candidateDate = new Date(candidateTimestamp);
-          const candM = candidateDate.getHours() * 60 + candidateDate.getMinutes();
-
-          const timeString = `${String(candidateDate.getHours()).padStart(2, '0')}:${String(
-            candidateDate.getMinutes()
-          ).padStart(2, '0')}`;
-
-          if (isQuietTime && isQuietTime(candM)) {
-            continue;
-          }
-
-          if (isSlotCompleted && isSlotCompleted(candidateTimestamp)) {
-            continue;
-          }
-
-          return {
-            timeString,
-            timestamp: candidateTimestamp,
-            isTomorrow: false,
-          };
-        }
-      }
-    }
-
-    // 3. After today's end time (or all today slots passed) -> next occurrence is tomorrow's start time
-    const tomorrowDate = new Date(now);
-    tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-    tomorrowDate.setHours(startH, startM, 0, 0);
-
-    return {
-      timeString: startTime,
-      timestamp: tomorrowDate.getTime(),
-      isTomorrow: true,
-    };
+    return null;
   }
 
   /**
@@ -223,8 +237,14 @@ export class ReminderEngineService {
     let waterCompletedCount = 0;
     let waterTotalCount = 0;
 
-    if (waterConfig.enabled && waterConfig.startTime && waterConfig.endTime) {
-      const interval = Math.max(5, waterConfig.intervalMinutes || 60);
+    const waterActiveDays =
+      waterConfig.activeDays && waterConfig.activeDays.length > 0
+        ? waterConfig.activeDays
+        : [0, 1, 2, 3, 4, 5, 6];
+    const isWaterActiveToday = waterActiveDays.includes(now.getDay());
+
+    if (waterConfig.enabled && isWaterActiveToday && waterConfig.startTime && waterConfig.endTime) {
+      const interval = Math.max(1, waterConfig.intervalMinutes || 60);
       const occurrences = this.generateDailyOccurrences(
         now,
         waterConfig.startTime,
@@ -286,7 +306,10 @@ export class ReminderEngineService {
         }
       }
 
-      waterCompletedCount = waterSlots.filter((s) => s.status === 'completed').length;
+      waterCompletedCount = Math.max(
+        waterSlots.filter((s) => s.status === 'completed').length,
+        existingWaterLogs.filter((s) => s.status === 'completed').length
+      );
       waterTotalCount = waterSlots.length;
 
       if (!isCurrentlyPaused) {
@@ -307,8 +330,14 @@ export class ReminderEngineService {
     let screenTotalCount = 0;
     let screenBreakMinutesCompleted = 0;
 
-    if (screenConfig.enabled && screenConfig.startTime && screenConfig.endTime) {
-      const interval = Math.max(5, screenConfig.screenIntervalMinutes || 30);
+    const screenActiveDays =
+      screenConfig.activeDays && screenConfig.activeDays.length > 0
+        ? screenConfig.activeDays
+        : [0, 1, 2, 3, 4, 5, 6];
+    const isScreenActiveToday = screenActiveDays.includes(now.getDay());
+
+    if (screenConfig.enabled && isScreenActiveToday && screenConfig.startTime && screenConfig.endTime) {
+      const interval = Math.max(1, screenConfig.screenIntervalMinutes || 30);
       const breakDuration = screenConfig.breakDurationMinutes || 5;
 
       const occurrences = this.generateDailyOccurrences(
@@ -348,7 +377,10 @@ export class ReminderEngineService {
         }
       }
 
-      screenCompletedCount = screenSlots.filter((s) => s.status === 'completed').length;
+      screenCompletedCount = Math.max(
+        screenSlots.filter((s) => s.status === 'completed').length,
+        existingScreenLogs.filter((s) => s.status === 'completed').length
+      );
       screenTotalCount = screenSlots.length;
       screenBreakMinutesCompleted = screenCompletedCount * breakDuration;
 

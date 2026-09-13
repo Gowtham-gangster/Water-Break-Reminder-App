@@ -1,11 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { Card, Button, Toggle, TimePicker, Select, useToast } from './ui';
+import { Card, Button, Toggle, TimePicker, Input, useToast } from './ui';
 import {
   Eye,
   Save,
   AlertCircle,
+  Calendar,
 } from 'lucide-react';
+
+const DAYS_OF_WEEK = [
+  { id: 1, label: 'Mon', full: 'Monday' },
+  { id: 2, label: 'Tue', full: 'Tuesday' },
+  { id: 3, label: 'Wed', full: 'Wednesday' },
+  { id: 4, label: 'Thu', full: 'Thursday' },
+  { id: 5, label: 'Fri', full: 'Friday' },
+  { id: 6, label: 'Sat', full: 'Saturday' },
+  { id: 0, label: 'Sun', full: 'Sunday' },
+];
 
 export const LookOutsidePage: React.FC = () => {
   const {
@@ -24,6 +35,7 @@ export const LookOutsidePage: React.FC = () => {
     screenIntervalMinutes: screenBreakConfig.screenIntervalMinutes || 30,
     breakDurationMinutes: screenBreakConfig.breakDurationMinutes || 5,
     reminderStyle: screenBreakConfig.reminderStyle || 'fullscreen',
+    activeDays: screenBreakConfig.activeDays || [1, 2, 3, 4, 5],
   });
 
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -37,6 +49,7 @@ export const LookOutsidePage: React.FC = () => {
       screenIntervalMinutes: screenBreakConfig.screenIntervalMinutes || 30,
       breakDurationMinutes: screenBreakConfig.breakDurationMinutes || 5,
       reminderStyle: screenBreakConfig.reminderStyle || 'fullscreen',
+      activeDays: screenBreakConfig.activeDays || [1, 2, 3, 4, 5],
     });
   }, [screenBreakConfig]);
 
@@ -63,10 +76,38 @@ export const LookOutsidePage: React.FC = () => {
     return () => clearInterval(interval);
   }, [nextScreenSlot, screenBreakConfig.enabled]);
 
+  const toggleDay = (dayId: number) => {
+    setFormData((prev) => {
+      const exists = prev.activeDays.includes(dayId);
+      const updated = exists
+        ? prev.activeDays.filter((d) => d !== dayId)
+        : [...prev.activeDays, dayId];
+      return { ...prev, activeDays: updated };
+    });
+  };
+
   const handleSave = async () => {
     if (formData.startTime >= formData.endTime) {
-      setValidationError('End time must be later than start time.');
+      setValidationError('End time must be strictly later than start time.');
       showToast('Please check your schedule times.', 'error');
+      return;
+    }
+
+    if (!formData.screenIntervalMinutes || Number(formData.screenIntervalMinutes) <= 0) {
+      setValidationError('Screen interval must be a positive number of minutes (greater than 0).');
+      showToast('Invalid screen interval value.', 'error');
+      return;
+    }
+
+    if (!formData.breakDurationMinutes || Number(formData.breakDurationMinutes) <= 0) {
+      setValidationError('Break duration must be a positive number of minutes (greater than 0).');
+      showToast('Invalid break duration.', 'error');
+      return;
+    }
+
+    if (!formData.activeDays || formData.activeDays.length === 0) {
+      setValidationError('Please select at least one active day for screen breaks.');
+      showToast('No active days selected.', 'error');
       return;
     }
 
@@ -80,6 +121,7 @@ export const LookOutsidePage: React.FC = () => {
       screenIntervalMinutes: Number(formData.screenIntervalMinutes),
       breakDurationMinutes: Number(formData.breakDurationMinutes),
       reminderStyle: formData.reminderStyle as 'fullscreen' | 'notification',
+      activeDays: formData.activeDays,
     });
 
     showToast('Look Outside schedule saved ✓', 'success');
@@ -94,7 +136,7 @@ export const LookOutsidePage: React.FC = () => {
             Look Outside
           </h1>
           <p className="text-xs sm:text-sm text-[var(--text-secondary)]">
-            Give your eyes regular moments away from the screen.
+            Give your eyes regular moments away from the screen with customizable intervals and days.
           </p>
         </div>
 
@@ -110,7 +152,7 @@ export const LookOutsidePage: React.FC = () => {
         />
       </div>
 
-      {/* 2. Next Break Card (Clean, No Preview Button) */}
+      {/* 2. Next Break Card */}
       <Card variant="screen" padding="md" className="space-y-3">
         <div className="space-y-1">
           <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--screen-primary)] flex items-center gap-1.5">
@@ -134,10 +176,10 @@ export const LookOutsidePage: React.FC = () => {
         </div>
       </Card>
 
-      {/* 3. Schedule Settings Form (Clean, No Preview Button) */}
+      {/* 3. Schedule Settings Form */}
       <Card variant="default" padding="lg" className="space-y-6">
         <h2 className="font-semibold text-base text-[var(--text-primary)] pb-3 border-b border-[var(--border-subtle)]">
-          Break Settings
+          Personal Break Configuration
         </h2>
 
         {validationError && (
@@ -147,52 +189,142 @@ export const LookOutsidePage: React.FC = () => {
           </div>
         )}
 
+        {/* Active Days Picker */}
+        <div className="space-y-2.5">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-semibold text-[var(--text-secondary)] flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5 text-[var(--screen-primary)]" /> Active Days
+            </label>
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setFormData((p) => ({ ...p, activeDays: [1, 2, 3, 4, 5] }))}
+                className="text-[var(--text-secondary)] hover:text-[var(--screen-primary)] transition-colors underline decoration-dotted"
+              >
+                Weekdays
+              </button>
+              <span className="text-[var(--text-muted)]">•</span>
+              <button
+                type="button"
+                onClick={() => setFormData((p) => ({ ...p, activeDays: [0, 1, 2, 3, 4, 5, 6] }))}
+                className="text-[var(--text-secondary)] hover:text-[var(--screen-primary)] transition-colors underline decoration-dotted"
+              >
+                All 7 Days
+              </button>
+              <span className="text-[var(--text-muted)]">•</span>
+              <button
+                type="button"
+                onClick={() => setFormData((p) => ({ ...p, activeDays: [0, 6] }))}
+                className="text-[var(--text-secondary)] hover:text-[var(--screen-primary)] transition-colors underline decoration-dotted"
+              >
+                Weekends
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {DAYS_OF_WEEK.map((day) => {
+              const isSelected = formData.activeDays.includes(day.id);
+              return (
+                <button
+                  key={day.id}
+                  type="button"
+                  onClick={() => toggleDay(day.id)}
+                  title={day.full}
+                  className={`px-3.5 py-2 rounded-[var(--radius-md)] text-xs font-semibold transition-all border ${
+                    isSelected
+                      ? 'bg-[var(--screen-primary)] text-white border-[var(--screen-primary)] shadow-sm'
+                      : 'bg-[var(--bg-surface)] text-[var(--text-secondary)] border-[var(--border-subtle)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]'
+                  }`}
+                >
+                  {day.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-[var(--text-muted)]">
+            Screen breaks will only trigger and show pending slots on selected active days.
+          </p>
+        </div>
+
+        {/* Time Window */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           <TimePicker
             label="Start time"
             value={formData.startTime}
             onChange={(e) => setFormData({ ...formData, startTime: e.target.value })}
-            helperText="When screen breaks begin each day."
+            helperText="Arbitrary start time (e.g. 08:13, 09:47, 13:26)."
           />
 
           <TimePicker
             label="End time"
             value={formData.endTime}
             onChange={(e) => setFormData({ ...formData, endTime: e.target.value })}
-            helperText="When daily breaks end."
+            helperText="Arbitrary end time (e.g. 17:53, 22:11)."
           />
         </div>
 
+        {/* Interval & Duration */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          <Select
-            label="Screen interval"
-            value={formData.screenIntervalMinutes}
-            onChange={(e) =>
-              setFormData({ ...formData, screenIntervalMinutes: Number(e.target.value) })
-            }
-            options={[
-              { value: 20, label: '20 minutes (20-20-20 rule)' },
-              { value: 25, label: '25 minutes (Pomodoro)' },
-              { value: 30, label: '30 minutes (Balanced)' },
-              { value: 45, label: '45 minutes' },
-              { value: 60, label: '60 minutes' },
-            ]}
-            helperText="Time spent looking at screen between breaks."
-          />
+          <div className="space-y-2">
+            <Input
+              type="number"
+              min={1}
+              max={720}
+              label="Screen interval (minutes)"
+              value={formData.screenIntervalMinutes}
+              onChange={(e) =>
+                setFormData({ ...formData, screenIntervalMinutes: Number(e.target.value) })
+              }
+              helperText="Time spent looking at screen between breaks."
+            />
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {[20, 25, 30, 45, 60].map((mins) => (
+                <button
+                  key={mins}
+                  type="button"
+                  onClick={() => setFormData((p) => ({ ...p, screenIntervalMinutes: mins }))}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
+                    formData.screenIntervalMinutes === mins
+                      ? 'bg-[var(--screen-subtle)] text-[var(--screen-primary)] border-[var(--screen-primary)] font-semibold'
+                      : 'bg-[var(--bg-subtle)] text-[var(--text-secondary)] border-[var(--border-subtle)] hover:bg-[var(--bg-surface)]'
+                  }`}
+                >
+                  {mins}m
+                </button>
+              ))}
+            </div>
+          </div>
 
-          <Select
-            label="Break duration"
-            value={formData.breakDurationMinutes}
-            onChange={(e) =>
-              setFormData({ ...formData, breakDurationMinutes: Number(e.target.value) })
-            }
-            options={[
-              { value: 2, label: '2 minutes' },
-              { value: 5, label: '5 minutes (Recommended)' },
-              { value: 10, label: '10 minutes' },
-            ]}
-            helperText="Duration to relax eyes."
-          />
+          <div className="space-y-2">
+            <Input
+              type="number"
+              min={1}
+              max={60}
+              label="Break duration (minutes)"
+              value={formData.breakDurationMinutes}
+              onChange={(e) =>
+                setFormData({ ...formData, breakDurationMinutes: Number(e.target.value) })
+              }
+              helperText="Duration to relax eyes and look away."
+            />
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {[2, 3, 5, 10].map((mins) => (
+                <button
+                  key={mins}
+                  type="button"
+                  onClick={() => setFormData((p) => ({ ...p, breakDurationMinutes: mins }))}
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium border transition-colors ${
+                    formData.breakDurationMinutes === mins
+                      ? 'bg-[var(--screen-subtle)] text-[var(--screen-primary)] border-[var(--screen-primary)] font-semibold'
+                      : 'bg-[var(--bg-subtle)] text-[var(--text-secondary)] border-[var(--border-subtle)] hover:bg-[var(--bg-surface)]'
+                  }`}
+                >
+                  {mins}m
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div className="pt-3 border-t border-[var(--border-subtle)]">

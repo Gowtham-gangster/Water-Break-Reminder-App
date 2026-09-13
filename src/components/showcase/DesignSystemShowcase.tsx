@@ -58,7 +58,7 @@ export const DesignSystemShowcase: React.FC = () => {
               <Sparkles className="w-5 h-5" />
             </span>
             <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)]">
-              EyeFlow Design System
+              PauseFlow Design System
             </h1>
           </div>
           <p className="text-xs sm:text-sm text-[var(--text-secondary)] mt-1">

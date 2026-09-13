@@ -11,3 +11,4 @@ export * from './Modal';
 export * from './Tabs';
 export * from './SectionHeader';
 export * from './Toast';
+export * from './BrandLogo';

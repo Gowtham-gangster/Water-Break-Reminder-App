@@ -21,13 +21,31 @@ import { backgroundScheduler } from '../platform/backgroundScheduler';
 import type { ScheduledNotification } from '../platform/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
+import { authService, type UserProfile } from '../services/authService';
+import { settingsService } from '../services/settingsService';
+import { reminderService } from '../services/reminderService';
+import { waterConfigService } from '../services/waterConfigService';
+import { lookOutsideConfigService } from '../services/lookOutsideConfigService';
+import { profileService } from '../services/profileService';
+import { profileAvatarService } from '../services/profileAvatarService';
+import { realtimeSyncService } from '../services/realtimeSyncService';
+import { syncService } from '../services/syncService';
+import { performanceDiagnostics } from '../services/performanceDiagnostics';
+
 function getTodayString(now: Date = new Date()): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
     now.getDate()
   ).padStart(2, '0')}`;
 }
 
+export type AuthStateType = 'checking' | 'authenticated' | 'unauthenticated';
+
 interface AppContextType {
+  authState: AuthStateType;
+  currentUser: UserProfile | null;
+  loginUser: (user: UserProfile) => Promise<void>;
+  logout: () => Promise<void>;
+
   waterConfig: WaterConfig;
   setWaterConfig: (cfg: WaterConfig) => Promise<void>;
   screenBreakConfig: ScreenBreakConfig;
@@ -61,8 +79,8 @@ interface AppContextType {
   onboardingCompleted: boolean;
   completeOnboarding: () => Promise<void>;
 
-  activeTab: 'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'showcase';
-  setActiveTab: (tab: 'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'showcase') => void;
+  activeTab: 'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'showcase' | 'profile';
+  setActiveTab: (tab: 'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'showcase' | 'profile') => void;
 
   // Active Reminder State (Explicit distinction between REAL scheduled events and PREVIEW)
   realActiveReminder: RealReminderEvent | null;
@@ -95,6 +113,7 @@ interface AppContextType {
     }
   ) => void;
   completeRealReminder: (category: 'water' | 'screen' | 'both', slotId: string) => Promise<void>;
+  skipRealReminder: (category: 'water' | 'screen' | 'both', slotId: string) => Promise<void>;
 
   // Legacy wrappers mapped safely to prevent side effects
   openBreakModal: () => void;
@@ -114,6 +133,9 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [authState, setAuthState] = useState<AuthStateType>('checking');
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+
   const [waterConfig, setWaterConfigState] = useState<WaterConfig>(APP_CONFIG.defaultWaterConfig);
   const [screenBreakConfig, setScreenBreakConfigState] = useState<ScreenBreakConfig>(
     APP_CONFIG.defaultScreenBreakConfig
@@ -124,14 +146,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     language: 'English',
     timeFormat: '12h',
     theme: 'system',
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     localOnlyMode: false,
   });
   const [notificationSettings, setNotificationSettingsState] = useState<NotificationSettings>({
     enabled: true,
     soundEnabled: true,
+    waterSound: 'water',
+    lookOutsideSound: 'bell',
     vibrationEnabled: true,
     previewMessage: true,
   });
+
+
 
   const [pauseState, setPauseState] = useState<PauseState>({
     isPaused: false,
@@ -145,7 +172,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(true);
 
   const [activeTab, setActiveTab] = useState<
-    'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'showcase'
+    'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'showcase' | 'profile'
   >('dashboard');
 
   // Real-Time Dynamic Timestamp State (Drives continuous reactive recalculation on device clock)
@@ -164,65 +191,423 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const waterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const screenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 1. Reactive Real-Time Device Clock Pulse & Sleep/Wake Detection
+  // Helper to load all user-scoped configurations immediately from local storage
+  const loadUserScopedData = async (user: UserProfile) => {
+    const userId = user.id;
+    const cacheStart = performance.now();
+    // 1. Instant local cache load
+    const wConfig = await storageEngine.loadWaterConfig(userId);
+    const sConfig = await storageEngine.loadScreenBreakConfig(userId);
+    const gSettings = await storageEngine.loadGeneralSettings(userId);
+    const nSettings = await storageEngine.loadNotificationSettings(userId);
+    const pState = await storageEngine.loadPauseState(userId);
+    const isOnboarded = await storageEngine.getOnboardingStatus(userId);
+
+    // Use profile timezone if general settings timezone not set
+    if (user.timezone && !gSettings.timezone) {
+      gSettings.timezone = user.timezone;
+    }
+
+    const userTz = gSettings.timezone || user.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata';
+
+    // Authoritative today's logs mapped directly from reminderService (prevents duplicate counting)
+    const todayWaterLogs: WaterReminderLog[] = [];
+    const todayScreenLogs: ScreenBreakLog[] = [];
+
+    try {
+      const todayEvents = await reminderService.getTodayEvents(userId, userTz);
+      for (const ev of todayEvents) {
+        if (ev.status === 'completed') {
+          const evDate = new Date(ev.completed_at || ev.scheduled_at || ev.created_at || Date.now());
+          const timeStr = `${String(evDate.getHours()).padStart(2, '0')}:${String(evDate.getMinutes()).padStart(2, '0')}`;
+          if (ev.type === 'water') {
+            if (!todayWaterLogs.some((l) => l.id === ev.id)) {
+              todayWaterLogs.push({
+                id: ev.id,
+                time: timeStr,
+                scheduledTimestamp: evDate.getTime(),
+                status: 'completed',
+                completedAt: new Date(ev.completed_at || evDate).toLocaleTimeString(),
+              });
+            }
+          } else if (ev.type === 'look_outside' || (ev.type as any) === 'screen') {
+            if (!todayScreenLogs.some((l) => l.id === ev.id)) {
+              todayScreenLogs.push({
+                id: ev.id,
+                time: timeStr,
+                scheduledTimestamp: evDate.getTime(),
+                durationMinutes: sConfig.breakDurationMinutes || 5,
+                status: 'completed',
+                completedAt: new Date(ev.completed_at || evDate).toLocaleTimeString(),
+              });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[AppContext] Could not restore today events from reminderService:', err);
+    }
+
+    // 2. Update React State immediately (Instant 0ms-ish Local UI Render)
+    setWaterConfigState(wConfig);
+    setScreenBreakConfigState(sConfig);
+    setGeneralSettingsState(gSettings);
+    setNotificationSettingsState(nSettings);
+    setPauseState(pState);
+    setOnboardingCompleted(isOnboarded);
+    setWaterLogs(todayWaterLogs);
+    setScreenLogs(todayScreenLogs);
+    performanceDiagnostics.markStartupLocalCache(performance.now() - cacheStart);
+
+    setUserAccountState({
+      id: user.id,
+      name: user.display_name,
+      email: user.email,
+      token: (authService as any).apiClient?.getToken?.() || '',
+      isLoggedIn: true,
+      lastSyncedAt: new Date().toLocaleTimeString(),
+    });
+
+    // 3. Asynchronous background cross-device cloud synchronization
+    (async () => {
+      try {
+        const syncResult = await syncService.syncUserAccount(userId);
+        if (syncResult && syncResult.success) {
+          // Reconcile Water Configuration from Cloud
+          if (syncResult.waterConfig) {
+            const mappedWater: WaterConfig = {
+              enabled: syncResult.waterConfig.enabled,
+              startTime: syncResult.waterConfig.start_time?.slice(0, 5) || '08:00',
+              endTime: syncResult.waterConfig.end_time?.slice(0, 5) || '22:00',
+              intervalMinutes: syncResult.waterConfig.interval_minutes,
+              durationMinutes: Math.round(syncResult.waterConfig.duration_seconds / 60) || 2,
+              sound: 'water',
+              activeDays: syncResult.waterConfig.active_days || [0, 1, 2, 3, 4, 5, 6],
+              quietHoursEnabled: false,
+              quietStartTime: '13:00',
+              quietEndTime: '14:00',
+              reminderStyle: 'popup',
+            };
+            setWaterConfigState(mappedWater);
+            await storageEngine.saveWaterConfig(mappedWater, userId);
+            if ((window as any).eyeflowNative?.updateWaterConfig) {
+              await (window as any).eyeflowNative.updateWaterConfig(mappedWater);
+            }
+          } else if (wConfig) {
+            // Upload local Water config to cloud as initial source of truth
+            await waterConfigService.updateWaterConfig(userId, {
+              enabled: wConfig.enabled,
+              interval_minutes: wConfig.intervalMinutes,
+              start_time: wConfig.startTime ? (wConfig.startTime.length === 5 ? `${wConfig.startTime}:00` : wConfig.startTime) : '08:00:00',
+              end_time: wConfig.endTime ? (wConfig.endTime.length === 5 ? `${wConfig.endTime}:00` : wConfig.endTime) : '22:00:00',
+              duration_seconds: (wConfig.durationMinutes || 2) * 60,
+              active_days: wConfig.activeDays || [0, 1, 2, 3, 4, 5, 6],
+            });
+          }
+
+          // Reconcile Look Outside Configuration from Cloud
+          if (syncResult.lookOutsideConfig) {
+            const mappedScreen: ScreenBreakConfig = {
+              enabled: syncResult.lookOutsideConfig.enabled,
+              startTime: syncResult.lookOutsideConfig.start_time?.slice(0, 5) || '09:00',
+              endTime: syncResult.lookOutsideConfig.end_time?.slice(0, 5) || '22:00',
+              screenIntervalMinutes: syncResult.lookOutsideConfig.interval_minutes,
+              breakDurationMinutes: Math.round(syncResult.lookOutsideConfig.duration_seconds / 60) || 5,
+              sound: 'bell',
+              activeDays: syncResult.lookOutsideConfig.active_days || [0, 1, 2, 3, 4, 5, 6],
+              reminderStyle: 'fullscreen',
+            };
+            setScreenBreakConfigState(mappedScreen);
+            await storageEngine.saveScreenBreakConfig(mappedScreen, userId);
+            if ((window as any).eyeflowNative?.updateScreenConfig) {
+              await (window as any).eyeflowNative.updateScreenConfig(mappedScreen);
+            }
+          } else if (sConfig) {
+            // Upload local Look Outside config to cloud as initial source of truth
+            await lookOutsideConfigService.updateLookOutsideConfig(userId, {
+              enabled: sConfig.enabled,
+              interval_minutes: sConfig.screenIntervalMinutes,
+              start_time: sConfig.startTime ? (sConfig.startTime.length === 5 ? `${sConfig.startTime}:00` : sConfig.startTime) : '09:00:00',
+              end_time: sConfig.endTime ? (sConfig.endTime.length === 5 ? `${sConfig.endTime}:00` : sConfig.endTime) : '22:00:00',
+              duration_seconds: (sConfig.breakDurationMinutes || 5) * 60,
+              active_days: sConfig.activeDays || [0, 1, 2, 3, 4, 5, 6],
+            });
+          }
+
+          // Reconcile User Settings from Cloud
+          if (syncResult.settings) {
+            const cloud = syncResult.settings;
+            if (cloud.theme) setGeneralSettingsState((prev) => ({ ...prev, theme: cloud.theme }));
+            if (cloud.time_format) setGeneralSettingsState((prev) => ({ ...prev, timeFormat: cloud.time_format }));
+            if (cloud.notifications_enabled !== undefined) setNotificationSettingsState((prev) => ({ ...prev, enabled: cloud.notifications_enabled }));
+            if (cloud.sound_enabled !== undefined) setNotificationSettingsState((prev) => ({ ...prev, soundEnabled: cloud.sound_enabled }));
+          } else if (gSettings) {
+            await settingsService.updateSettings(userId, {
+              theme: gSettings.theme,
+              time_format: gSettings.timeFormat,
+              sound_enabled: nSettings.soundEnabled,
+              notifications_enabled: nSettings.enabled,
+            });
+          }
+
+          // Reconcile Profile (Avatar, Display Name, Timezone)
+          if (syncResult.profile) {
+            let authoritativeAvatarUrl = syncResult.profile.avatar_url;
+
+            // Handle legacy base64 avatar auto-migration to Supabase Storage
+            if (authoritativeAvatarUrl && authoritativeAvatarUrl.startsWith('data:image/')) {
+              try {
+                const migratedUrl = await profileAvatarService.migrateLegacyBase64Avatar(
+                  userId,
+                  authoritativeAvatarUrl
+                );
+                if (migratedUrl) {
+                  authoritativeAvatarUrl = migratedUrl;
+                }
+              } catch (migErr) {
+                console.warn('[AppContext] Legacy avatar migration skipped:', migErr);
+              }
+            }
+
+            if (syncResult.profile.timezone) {
+              setGeneralSettingsState((prev) => ({ ...prev, timezone: syncResult.profile!.timezone }));
+            }
+
+            setCurrentUser((prev) => {
+              if (!prev || prev.id !== userId) return prev;
+              return {
+                ...prev,
+                display_name: syncResult.profile!.display_name || prev.display_name,
+                avatar_url: authoritativeAvatarUrl ?? null,
+                timezone: syncResult.profile!.timezone || prev.timezone,
+              };
+            });
+
+            setUserAccountState((prev) => ({
+              ...prev,
+              name: syncResult.profile!.display_name || prev.name,
+            }));
+
+            await storageEngine.saveProfile(
+              {
+                id: userId,
+                display_name: syncResult.profile.display_name,
+                avatar_url: authoritativeAvatarUrl,
+                timezone: syncResult.profile.timezone || gSettings.timezone,
+              },
+              userId
+            );
+          } else if (user) {
+            await profileService.updateProfile(userId, {
+              display_name: user.display_name,
+              timezone: gSettings.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('[AppContext] Background cloud sync skipped/offline:', e);
+      }
+    })();
+  };
+
+  const loginUser = async (user: UserProfile) => {
+    setCurrentUser(user);
+    await loadUserScopedData(user);
+    setAuthState('authenticated');
+  };
+
+  // COMPLETE 6-STEP LOGOUT PIPELINE
+  const logout = async () => {
+    // 1. Cancel current user's local reminders & Realtime subscription
+    try {
+      realtimeSyncService.unsubscribe();
+      await backgroundScheduler.cancelAllNotifications();
+      if ((window as any).eyeflowNative?.resumeReminders) {
+        await (window as any).eyeflowNative.resumeReminders();
+      }
+    } catch (e) {
+      console.warn('[Logout] Error cancelling local notifications:', e);
+    }
+
+    // 2. Stop current user's active timers
+    if (waterTimerRef.current) clearTimeout(waterTimerRef.current);
+    if (screenTimerRef.current) clearTimeout(screenTimerRef.current);
+    reminderEngine.clearFiredHistory();
+
+    // 3. Clear user-specific transient state
+    setRealActiveReminder(null);
+    setPreviewReminder(null);
+    setActiveBreakModalOpen(false);
+    setActiveWaterModalOpen(false);
+    setActivePauseModalOpen(false);
+    setActiveAuthModalOpen(false);
+    setWaterLogs([]);
+    setScreenLogs([]);
+
+    // 4. Clear cached user configuration & reset state to defaults
+    const currentUserId = currentUser?.id;
+    if (currentUserId) {
+      await storageEngine.clearUserData(currentUserId);
+    }
+    setWaterConfigState(APP_CONFIG.defaultWaterConfig);
+    setScreenBreakConfigState(APP_CONFIG.defaultScreenBreakConfig);
+    setGeneralSettingsState({
+      startOnStartup: true,
+      minimizeToTray: true,
+      language: 'English',
+      timeFormat: '12h',
+      theme: 'system',
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      localOnlyMode: false,
+    });
+    setNotificationSettingsState({
+      enabled: true,
+      soundEnabled: true,
+      waterSound: 'water',
+      lookOutsideSound: 'bell',
+      vibrationEnabled: true,
+      previewMessage: true,
+    });
+    setPauseState({
+      isPaused: false,
+      pauseUntil: null,
+      pauseMinutes: null,
+    });
+
+    // 5. Invalidate session & cancel native user notifications
+    const oldUserId = currentUser?.id;
+    if (oldUserId) {
+      backgroundScheduler.cancelUserSchedule(oldUserId);
+    } else {
+      backgroundScheduler.cancelAllNotifications();
+    }
+    await authService.signOut(oldUserId);
+    setCurrentUser(null);
+    setUserAccountState({ isLoggedIn: false });
+
+    // 6. Return to Login
+    setAuthState('unauthenticated');
+  };
+
+  // 1. Reactive Real-Time Device Clock Pulse & Sleep/Wake Detection + App Resume Cloud Sync
   useEffect(() => {
     const handleTimeSync = () => {
       setCurrentDeviceTimestamp(Date.now());
+    };
+
+    const handleAppResumeSync = async () => {
+      handleTimeSync();
+      if (document.visibilityState === 'visible' && currentUser?.id) {
+        try {
+          const syncRes = await syncService.syncUserAccount(currentUser.id);
+          if (syncRes && syncRes.success) {
+            if (syncRes.waterConfig) {
+              const mappedWater: WaterConfig = {
+                enabled: syncRes.waterConfig.enabled,
+                startTime: syncRes.waterConfig.start_time?.slice(0, 5) || '08:00',
+                endTime: syncRes.waterConfig.end_time?.slice(0, 5) || '22:00',
+                intervalMinutes: syncRes.waterConfig.interval_minutes,
+                durationMinutes: Math.round(syncRes.waterConfig.duration_seconds / 60) || 2,
+                sound: 'water',
+                activeDays: syncRes.waterConfig.active_days || [0, 1, 2, 3, 4, 5, 6],
+                quietHoursEnabled: false,
+                quietStartTime: '13:00',
+                quietEndTime: '14:00',
+                reminderStyle: 'popup',
+              };
+              setWaterConfigState(mappedWater);
+              await storageEngine.saveWaterConfig(mappedWater, currentUser.id);
+            }
+            if (syncRes.lookOutsideConfig) {
+              const mappedScreen: ScreenBreakConfig = {
+                enabled: syncRes.lookOutsideConfig.enabled,
+                startTime: syncRes.lookOutsideConfig.start_time?.slice(0, 5) || '09:00',
+                endTime: syncRes.lookOutsideConfig.end_time?.slice(0, 5) || '22:00',
+                screenIntervalMinutes: syncRes.lookOutsideConfig.interval_minutes,
+                breakDurationMinutes: Math.round(syncRes.lookOutsideConfig.duration_seconds / 60) || 5,
+                sound: 'bell',
+                activeDays: syncRes.lookOutsideConfig.active_days || [0, 1, 2, 3, 4, 5, 6],
+                reminderStyle: 'fullscreen',
+              };
+              setScreenBreakConfigState(mappedScreen);
+              await storageEngine.saveScreenBreakConfig(mappedScreen, currentUser.id);
+            }
+            if (syncRes.profile) {
+              setCurrentUser((prev) => {
+                if (!prev || prev.id !== currentUser.id) return prev;
+                return {
+                  ...prev,
+                  display_name: syncRes.profile!.display_name || prev.display_name,
+                  avatar_url: syncRes.profile!.avatar_url ?? null,
+                  timezone: syncRes.profile!.timezone || prev.timezone,
+                };
+              });
+            }
+          }
+        } catch (e) {
+          console.warn('[AppContext] App resume cloud sync skipped:', e);
+        }
+      }
     };
 
     // 1-second pulse for real-time reactive countdowns and second transitions
     const timer = setInterval(handleTimeSync, 1000);
 
     // Instant sync on window focus, visibility change, and device wake
-    window.addEventListener('focus', handleTimeSync);
-    window.addEventListener('visibilitychange', handleTimeSync);
+    window.addEventListener('focus', handleAppResumeSync);
+    window.addEventListener('visibilitychange', handleAppResumeSync);
 
     return () => {
       clearInterval(timer);
-      window.removeEventListener('focus', handleTimeSync);
-      window.removeEventListener('visibilitychange', handleTimeSync);
+      window.removeEventListener('focus', handleAppResumeSync);
+      window.removeEventListener('visibilitychange', handleAppResumeSync);
     };
-  }, []);
+  }, [currentUser?.id]);
 
-  // 2. Load storage & settings on boot (Configuration & History ONLY - No active modal restore)
+  // 2. Session verification on boot
   useEffect(() => {
-    async function loadData() {
-      const wConfig = await storageEngine.loadWaterConfig();
-      const sConfig = await storageEngine.loadScreenBreakConfig();
-      const gSettings = await storageEngine.loadGeneralSettings();
-      const nSettings = await storageEngine.loadNotificationSettings();
-      const pState = await storageEngine.loadPauseState();
-      const uAccount = await storageEngine.loadUserAccount();
-      const isOnboarded = await storageEngine.getOnboardingStatus();
-
-      const todayStr = getTodayString();
-      const todayWaterLogs = await storageEngine.loadDailyWaterLogs(todayStr);
-      const todayScreenLogs = await storageEngine.loadDailyScreenLogs(todayStr);
-
-      setWaterConfigState(wConfig);
-      setScreenBreakConfigState(sConfig);
-      setGeneralSettingsState(gSettings);
-      setNotificationSettingsState(nSettings);
-      setPauseState(pState);
-      setUserAccountState(uAccount);
-      setOnboardingCompleted(isOnboarded);
-
-      setWaterLogs(todayWaterLogs);
-      setScreenLogs(todayScreenLogs);
-
-      // Clean transient state guarantee
-      setRealActiveReminder(null);
-      setPreviewReminder(null);
-      setActiveWaterModalOpen(false);
-      setActiveBreakModalOpen(false);
-
-      notificationEngine.requestPermission();
+    async function initSession() {
+      try {
+        const { user } = await authService.restoreSession();
+        if (user) {
+          await loginUser(user);
+        } else {
+          setAuthState('unauthenticated');
+        }
+      } catch (err) {
+        console.warn('[AppContext] Session verification error:', err);
+        setAuthState('unauthenticated');
+      } finally {
+        notificationEngine.requestPermission();
+      }
     }
 
-    loadData();
+    initSession();
   }, []);
 
-  // 3. Listen to Native Background Daemon Status Updates (Desktop Electron Environment)
+  // 3. Network Reconnect Listener: Automatically flush offline events and sync
+  useEffect(() => {
+    const handleReconnect = async () => {
+      try {
+        if (currentUser?.id && authService.isAuthenticated()) {
+          const flushedCount = await reminderService.flushOfflineEvents(currentUser.id);
+          if (flushedCount > 0) {
+            console.log(`[AppContext] Flushed ${flushedCount} offline events to cloud on reconnect.`);
+          }
+          await syncService.syncUserAccount(currentUser.id);
+        }
+      } catch (err) {
+        console.warn('[AppContext] Failed to flush offline events on reconnect:', err);
+      }
+    };
+
+    window.addEventListener('online', handleReconnect);
+    return () => {
+      window.removeEventListener('online', handleReconnect);
+    };
+  }, [currentUser?.id]);
+
+  // 4. Listen to Native Background Daemon Status Updates (Desktop Electron Environment)
   useEffect(() => {
     if (typeof window === 'undefined' || !(window as any).eyeflowNative?.isDesktop) return;
 
@@ -230,10 +615,89 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCurrentDeviceTimestamp(Date.now());
     });
 
+    const cleanupTriggered = (window as any).eyeflowNative.onReminderTriggered?.(
+      async (data: { type: 'water' | 'screen' | 'look_outside'; slotId: string; scheduledAt?: string }) => {
+        console.log('[AppContext] Native reminder triggered received:', data);
+        const cat = data.type === 'screen' ? 'look_outside' : data.type;
+        const activeUid = currentUser?.id || (await authService.getCurrentUser())?.id;
+        if (activeUid) {
+          await reminderService.recordTriggered(activeUid, cat, data.slotId, data.scheduledAt);
+        }
+      }
+    );
+
+    const cleanupCompleted = (window as any).eyeflowNative.onNativeReminderCompleted?.(
+      async (data: { type: 'water' | 'screen' | 'look_outside'; slotId: string; completedAt?: string }) => {
+        console.log('[AppContext] Native reminder completion received:', data);
+        const cat = data.type === 'look_outside' ? 'screen' : data.type;
+        await completeRealReminder(cat, data.slotId);
+      }
+    );
+
+    const cleanupExpired = (window as any).eyeflowNative.onNativeReminderExpired?.(
+      async (data: { type: 'water' | 'screen' | 'look_outside'; slotId: string; expiredAt?: string }) => {
+        console.log('[AppContext] Native reminder expiration received:', data);
+        const cat = data.type === 'look_outside' ? 'screen' : data.type;
+        await skipRealReminder(cat, data.slotId);
+      }
+    );
+
     return () => {
       if (cleanupStatus) cleanupStatus();
+      if (cleanupTriggered) cleanupTriggered();
+      if (cleanupCompleted) cleanupCompleted();
+      if (cleanupExpired) cleanupExpired();
     };
-  }, []);
+  }, [currentUser]);
+
+  // 5. Direct Event Subscription: Authoritative Reminder Service Events (Standalone Overlay, Web, Mobile, Background Sync)
+  useEffect(() => {
+    const unsub = reminderService.onReminderEvent(async () => {
+      const activeUserId = currentUser?.id || (await authService.getCurrentUser())?.id;
+      if (activeUserId) {
+        try {
+          const todayEvents = await reminderService.getTodayEvents(activeUserId);
+          const newWaterLogs: WaterReminderLog[] = [];
+          const newScreenLogs: ScreenBreakLog[] = [];
+
+          for (const ev of todayEvents) {
+            if (ev.status === 'completed') {
+              const evDate = new Date(ev.scheduled_at || ev.created_at || ev.completed_at || Date.now());
+              const timeStr = `${String(evDate.getHours()).padStart(2, '0')}:${String(evDate.getMinutes()).padStart(2, '0')}`;
+              if (ev.type === 'water') {
+                if (!newWaterLogs.some((l) => l.id === ev.id || l.time === timeStr)) {
+                  newWaterLogs.push({
+                    id: ev.id,
+                    time: timeStr,
+                    scheduledTimestamp: evDate.getTime(),
+                    status: 'completed',
+                    completedAt: new Date(ev.completed_at || evDate).toLocaleTimeString(),
+                  });
+                }
+              } else if (ev.type === 'look_outside' || (ev.type as any) === 'screen') {
+                if (!newScreenLogs.some((l) => l.id === ev.id || l.time === timeStr)) {
+                  newScreenLogs.push({
+                    id: ev.id,
+                    time: timeStr,
+                    scheduledTimestamp: evDate.getTime(),
+                    durationMinutes: screenBreakConfig.breakDurationMinutes || 5,
+                    status: 'completed',
+                    completedAt: new Date(ev.completed_at || evDate).toLocaleTimeString(),
+                  });
+                }
+              }
+            }
+          }
+          setWaterLogs(newWaterLogs);
+          setScreenLogs(newScreenLogs);
+        } catch (_) {}
+      }
+    });
+
+    return () => {
+      unsub();
+    };
+  }, [currentUser?.id, screenBreakConfig.breakDurationMinutes]);
 
   // 4. Theme synchronization
   useEffect(() => {
@@ -248,6 +712,247 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [generalSettings.theme]);
 
+  // 5. Supabase Realtime Multi-Device Synchronization Listener
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const userId = currentUser.id;
+
+    // Connect Realtime Channel
+    realtimeSyncService.subscribe(userId);
+
+    // 1. Water Config remote change from another device (Laptop / Mobile / Web)
+    const unsubWater = realtimeSyncService.onWaterConfigChange(async (payload) => {
+      if (payload.new && (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE')) {
+        console.log('[AppContext] Remote Water Config update received via Realtime:', payload.new);
+        try {
+          const { config: latestCloudConfig } = await waterConfigService.getWaterConfig(userId);
+          const activeWater = latestCloudConfig || payload.new;
+          if (activeWater) {
+            const mappedWater: WaterConfig = {
+              enabled: activeWater.enabled,
+              startTime: activeWater.start_time?.slice(0, 5) || '08:00',
+              endTime: activeWater.end_time?.slice(0, 5) || '22:00',
+              intervalMinutes: activeWater.interval_minutes,
+              durationMinutes: Math.round(activeWater.duration_seconds / 60) || 2,
+              sound: 'water',
+              activeDays: activeWater.active_days || [0, 1, 2, 3, 4, 5, 6],
+              quietHoursEnabled: false,
+              quietStartTime: '13:00',
+              quietEndTime: '14:00',
+              reminderStyle: 'popup',
+            };
+            setWaterConfigState(mappedWater);
+            await storageEngine.saveWaterConfig(mappedWater, userId);
+            if ((window as any).eyeflowNative?.updateWaterConfig) {
+              await (window as any).eyeflowNative.updateWaterConfig(mappedWater);
+            }
+          }
+        } catch (err) {
+          console.warn('[AppContext] Realtime water config reconciliation error:', err);
+        }
+      }
+    });
+
+    // 2. Look Outside Config remote change from another device
+    const unsubScreen = realtimeSyncService.onLookOutsideConfigChange(async (payload) => {
+      if (payload.new && (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE')) {
+        console.log('[AppContext] Remote Look Outside Config update received via Realtime:', payload.new);
+        try {
+          const { config: latestCloudConfig } = await lookOutsideConfigService.getLookOutsideConfig(userId);
+          const activeLook = latestCloudConfig || payload.new;
+          if (activeLook) {
+            const mappedScreen: ScreenBreakConfig = {
+              enabled: activeLook.enabled,
+              startTime: activeLook.start_time?.slice(0, 5) || '09:00',
+              endTime: activeLook.end_time?.slice(0, 5) || '22:00',
+              screenIntervalMinutes: activeLook.interval_minutes,
+              breakDurationMinutes: Math.round(activeLook.duration_seconds / 60) || 5,
+              sound: 'bell',
+              activeDays: activeLook.active_days || [0, 1, 2, 3, 4, 5, 6],
+              reminderStyle: 'fullscreen',
+            };
+            setScreenBreakConfigState(mappedScreen);
+            await storageEngine.saveScreenBreakConfig(mappedScreen, userId);
+            if ((window as any).eyeflowNative?.updateScreenConfig) {
+              await (window as any).eyeflowNative.updateScreenConfig(mappedScreen);
+            }
+          }
+        } catch (err) {
+          console.warn('[AppContext] Realtime look outside config reconciliation error:', err);
+        }
+      }
+    });
+
+    // 3. User Settings remote change from another device
+    const unsubSettings = realtimeSyncService.onSettingsChange(async (payload) => {
+      if (payload.new && (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE')) {
+        console.log('[AppContext] Remote Settings update received via Realtime:', payload.new);
+        try {
+          const { settings: latestSettings } = await settingsService.getSettings(userId);
+          const cloud = latestSettings || payload.new;
+          if (cloud) {
+            if (cloud.theme) setGeneralSettingsState((prev) => ({ ...prev, theme: cloud.theme }));
+            if (cloud.time_format) setGeneralSettingsState((prev) => ({ ...prev, timeFormat: cloud.time_format }));
+            if (cloud.notifications_enabled !== undefined) setNotificationSettingsState((prev) => ({ ...prev, enabled: cloud.notifications_enabled }));
+            if (cloud.sound_enabled !== undefined) setNotificationSettingsState((prev) => ({ ...prev, soundEnabled: cloud.sound_enabled }));
+          }
+        } catch (err) {
+          console.warn('[AppContext] Realtime settings reconciliation error:', err);
+        }
+      }
+    });
+
+    // 4. Remote Reminder Event completed / triggered on another device (e.g. Mobile)
+    const unsubEvents = realtimeSyncService.onReminderEventChange(async (payload) => {
+      if (payload.new && (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE')) {
+        console.log('[AppContext] Remote reminder event received via Realtime:', payload.new);
+        const ev = payload.new;
+        
+        // Ingest into local store without full refetch
+        reminderService.ingestRemoteEvent(userId, ev);
+
+        // Record diagnostics
+        if (ev.updated_at) {
+          const latency = Math.max(15, Date.now() - new Date(ev.updated_at).getTime());
+          performanceDiagnostics.markRealtimeDelivery(latency);
+        }
+
+        if (ev.status === 'completed') {
+          const evDate = new Date(ev.completed_at || ev.scheduled_at);
+          const timeStr = `${String(evDate.getHours()).padStart(2, '0')}:${String(evDate.getMinutes()).padStart(2, '0')}`;
+          if (ev.type === 'water') {
+            setWaterLogs((prev) => {
+              if (prev.some((l) => l.id === ev.id)) return prev;
+              return [
+                ...prev,
+                {
+                  id: ev.id,
+                  time: timeStr,
+                  scheduledTimestamp: new Date(ev.scheduled_at || Date.now()).getTime(),
+                  status: 'completed',
+                  completedAt: evDate.toLocaleTimeString(),
+                },
+              ];
+            });
+          } else if (ev.type === 'look_outside' || (ev.type as any) === 'screen') {
+            setScreenLogs((prev) => {
+              if (prev.some((l) => l.id === ev.id)) return prev;
+              return [
+                ...prev,
+                {
+                  id: ev.id,
+                  time: timeStr,
+                  scheduledTimestamp: new Date(ev.scheduled_at || Date.now()).getTime(),
+                  durationMinutes: 5,
+                  status: 'completed',
+                  completedAt: evDate.toLocaleTimeString(),
+                },
+              ];
+            });
+          }
+        }
+      }
+    });
+
+    // 5. Local Service Reminder Event Listener (handles locally completed/expired reminders)
+    const unsubLocalEvents = reminderService.onReminderEvent((ev) => {
+      if (ev.status === 'completed') {
+        const evDate = new Date(ev.completed_at || ev.scheduled_at || Date.now());
+        const timeStr = `${String(evDate.getHours()).padStart(2, '0')}:${String(evDate.getMinutes()).padStart(2, '0')}`;
+        if (ev.type === 'water') {
+          setWaterLogs((prev) => {
+            if (prev.some((l) => l.id === ev.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: ev.id,
+                time: timeStr,
+                scheduledTimestamp: new Date(ev.scheduled_at || Date.now()).getTime(),
+                status: 'completed',
+                completedAt: evDate.toLocaleTimeString(),
+              },
+            ];
+          });
+        } else if (ev.type === 'look_outside' || (ev.type as any) === 'screen') {
+          setScreenLogs((prev) => {
+            if (prev.some((l) => l.id === ev.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: ev.id,
+                time: timeStr,
+                scheduledTimestamp: new Date(ev.scheduled_at || Date.now()).getTime(),
+                durationMinutes: 5,
+                status: 'completed',
+                completedAt: evDate.toLocaleTimeString(),
+              },
+            ];
+          });
+        }
+      }
+    });
+
+    // 6. Remote Profile (Avatar, Display Name, Timezone) update from another device (Web, Windows, Android)
+    const unsubProfile = realtimeSyncService.onProfileChange(async (payload) => {
+      if (payload.new && (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE')) {
+        const incoming = payload.new;
+        if (!incoming.id || incoming.id !== userId) {
+          console.log(`[AppContext] Ignored foreign profile update: ${incoming.id} !== ${userId}`);
+          return;
+        }
+
+        console.log('[AppContext] Remote Profile update received via Realtime:', incoming);
+        try {
+          // Authoritative avatar URL resolution from Realtime payload
+          const resolvedAvatar = profileAvatarService.resolveAvatarUrl(incoming.avatar_url);
+
+          // Update React application state immediately
+          setCurrentUser((prev) => {
+            if (!prev || prev.id !== userId) return prev;
+            return {
+              ...prev,
+              display_name: incoming.display_name || prev.display_name,
+              avatar_url: resolvedAvatar,
+              timezone: incoming.timezone || prev.timezone,
+            };
+          });
+
+          setUserAccountState((prev) => ({
+            ...prev,
+            name: incoming.display_name || prev.name,
+          }));
+
+          if (incoming.timezone) {
+            setGeneralSettingsState((prev) => ({ ...prev, timezone: incoming.timezone }));
+          }
+
+          // Persist authoritative profile to user-scoped local cache
+          await storageEngine.saveProfile(
+            {
+              id: userId,
+              display_name: incoming.display_name,
+              avatar_url: resolvedAvatar,
+              timezone: incoming.timezone,
+              updated_at: incoming.updated_at || new Date().toISOString(),
+            },
+            userId
+          );
+        } catch (err) {
+          console.warn('[AppContext] Realtime profile reconciliation error:', err);
+        }
+      }
+    });
+
+    return () => {
+      unsubWater();
+      unsubScreen();
+      unsubSettings();
+      unsubEvents();
+      unsubLocalEvents();
+      unsubProfile();
+    };
+  }, [currentUser?.id]);
+
   // Unified Centralized Dynamic Real-Time Engine Calculation
   const scheduleResult = reminderEngine.calculateSchedule(
     waterConfig,
@@ -258,38 +963,107 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     new Date(currentDeviceTimestamp)
   );
 
-  // Save Handlers
+  // Save Handlers with Cloud Synchronization
   const setWaterConfig = async (cfg: WaterConfig) => {
     setWaterConfigState(cfg);
-    await storageEngine.saveWaterConfig(cfg);
+    await storageEngine.saveWaterConfig(cfg, currentUser?.id);
     if ((window as any).eyeflowNative?.updateWaterConfig) {
       await (window as any).eyeflowNative.updateWaterConfig(cfg);
+    }
+    if (currentUser?.id) {
+      try {
+        const formattedStart = cfg.startTime ? (cfg.startTime.length === 5 ? `${cfg.startTime}:00` : cfg.startTime) : '09:00:00';
+        const formattedEnd = cfg.endTime ? (cfg.endTime.length === 5 ? `${cfg.endTime}:00` : cfg.endTime) : '18:00:00';
+        const res = await waterConfigService.updateWaterConfig(currentUser.id, {
+          enabled: cfg.enabled,
+          interval_minutes: Number(cfg.intervalMinutes),
+          start_time: formattedStart,
+          end_time: formattedEnd,
+          duration_seconds: (Number(cfg.durationMinutes) || 2) * 60,
+          active_days: cfg.activeDays,
+        });
+        if (res.error) {
+          console.warn('[AppContext] Cloud water config sync returned error:', res.error);
+        } else {
+          console.log('[AppContext] Water config successfully saved and confirmed in Supabase ✓');
+        }
+      } catch (err) {
+        console.warn('[AppContext] Failed to sync water config to cloud:', err);
+      }
     }
   };
 
   const setScreenBreakConfig = async (cfg: ScreenBreakConfig) => {
     setScreenBreakConfigState(cfg);
-    await storageEngine.saveScreenBreakConfig(cfg);
+    await storageEngine.saveScreenBreakConfig(cfg, currentUser?.id);
     if ((window as any).eyeflowNative?.updateScreenConfig) {
       await (window as any).eyeflowNative.updateScreenConfig(cfg);
+    }
+    if (currentUser?.id) {
+      try {
+        const formattedStart = cfg.startTime ? (cfg.startTime.length === 5 ? `${cfg.startTime}:00` : cfg.startTime) : '09:00:00';
+        const formattedEnd = cfg.endTime ? (cfg.endTime.length === 5 ? `${cfg.endTime}:00` : cfg.endTime) : '18:00:00';
+        const res = await lookOutsideConfigService.updateLookOutsideConfig(currentUser.id, {
+          enabled: cfg.enabled,
+          interval_minutes: Number(cfg.screenIntervalMinutes),
+          start_time: formattedStart,
+          end_time: formattedEnd,
+          duration_seconds: (Number(cfg.breakDurationMinutes) || 5) * 60,
+          active_days: cfg.activeDays,
+        });
+        if (res.error) {
+          console.warn('[AppContext] Cloud look outside config sync returned error:', res.error);
+        } else {
+          console.log('[AppContext] Look Outside config successfully saved and confirmed in Supabase ✓');
+        }
+      } catch (err) {
+        console.warn('[AppContext] Failed to sync screen break config to cloud:', err);
+      }
     }
   };
 
   const setGeneralSettings = async (settings: GeneralSettings) => {
     setGeneralSettingsState(settings);
-    await storageEngine.saveGeneralSettings(settings);
+    await storageEngine.saveGeneralSettings(settings, currentUser?.id);
+    if (currentUser?.id) {
+      try {
+        await settingsService.updateSettings(currentUser.id, {
+          theme: settings.theme,
+          time_format: settings.timeFormat,
+        });
+        if (settings.timezone) {
+          await profileService.updateProfile(currentUser.id, {
+            timezone: settings.timezone,
+          });
+        }
+      } catch (err) {
+        console.warn('[AppContext] Failed to sync general settings to cloud:', err);
+      }
+    }
   };
 
   const setNotificationSettings = async (settings: NotificationSettings) => {
     setNotificationSettingsState(settings);
-    await storageEngine.saveNotificationSettings(settings);
+    await storageEngine.saveNotificationSettings(settings, currentUser?.id);
+    if (currentUser?.id) {
+      try {
+        await settingsService.updateSettings(currentUser.id, {
+          notifications_enabled: settings.enabled,
+          sound_enabled: settings.soundEnabled,
+        });
+      } catch (err) {
+        console.warn('[AppContext] Failed to sync notification settings to cloud:', err);
+      }
+    }
   };
+
+
 
   const setPauseDuration = async (minutes: number | 'tomorrow' | null) => {
     if (minutes === null) {
-      const newState: PauseState = { isPaused: false, pauseUntil: null, pauseMinutes: null };
+      const newState: PauseState = { isPaused: false, pauseUntil: null, pauseMinutes: null, userId: currentUser?.id };
       setPauseState(newState);
-      await storageEngine.savePauseState(newState);
+      await storageEngine.savePauseState(newState, currentUser?.id);
       if ((window as any).eyeflowNative?.resumeReminders) {
         await (window as any).eyeflowNative.resumeReminders();
       }
@@ -311,10 +1085,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isPaused: true,
       pauseUntil: untilDate.toISOString(),
       pauseMinutes: typeof minutes === 'number' ? minutes : 1440,
+      userId: currentUser?.id,
     };
 
     setPauseState(newState);
-    await storageEngine.savePauseState(newState);
+    await storageEngine.savePauseState(newState, currentUser?.id);
     if ((window as any).eyeflowNative?.pauseReminders) {
       await (window as any).eyeflowNative.pauseReminders(typeof minutes === 'number' ? minutes : 1440);
     }
@@ -323,15 +1098,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // REAL Reminder Status Update
   const markWaterStatus = async (id: string, status: ReminderStatus) => {
     const todayStr = getTodayString();
-    const existing = waterLogs.find((l) => l.id === id);
+    const timeMatch = id.match(/(\d{1,2}):(\d{2})/);
+    const slotTime = timeMatch
+      ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`
+      : id.replace('water-', '');
+
+    const existing = waterLogs.find((l) => l.id === id || l.time === slotTime);
     let updated: WaterReminderLog[];
 
     if (existing) {
       updated = waterLogs.map((l) =>
-        l.id === id ? { ...l, status, completedAt: new Date().toLocaleTimeString() } : l
+        l.id === id || l.time === slotTime
+          ? { ...l, id, time: slotTime, status, completedAt: new Date().toLocaleTimeString() }
+          : l
       );
     } else {
-      const slotTime = id.includes(':') ? id.split(':').pop() || '12:00' : id.replace('water-', '');
       updated = [
         ...waterLogs,
         {
@@ -345,27 +1126,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     setWaterLogs(updated);
-    await storageEngine.saveDailyWaterLogs(todayStr, updated);
+    await storageEngine.saveDailyWaterLogs(todayStr, updated, currentUser?.id);
+
+    // Record authoritative lifecycle event in reminderService
+    try {
+      const activeUserId = currentUser?.id || (await authService.getCurrentUser())?.id || '';
+      if (activeUserId) {
+        if (status === 'completed') {
+          await reminderService.recordCompleted(activeUserId, 'water', id, undefined, new Date().toISOString());
+        } else if (status === 'skipped' || status === 'missed') {
+          await reminderService.recordExpired(activeUserId, 'water', id);
+        }
+      }
+    } catch (err) {
+      console.warn('[AppContext] Failed to record water event in reminderService:', err);
+    }
   };
 
   const markScreenStatus = async (id: string, status: ReminderStatus) => {
     const todayStr = getTodayString();
-    const existing = screenLogs.find((l) => l.id === id);
+    const timeMatch = id.match(/(\d{1,2}):(\d{2})/);
+    const slotTime = timeMatch
+      ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`
+      : id.replace('screen-', '');
+
+    const existing = screenLogs.find((l) => l.id === id || l.time === slotTime);
     let updated: ScreenBreakLog[];
 
     if (existing) {
       updated = screenLogs.map((l) =>
-        l.id === id ? { ...l, status, completedAt: new Date().toLocaleTimeString() } : l
+        l.id === id || l.time === slotTime
+          ? { ...l, id, time: slotTime, status, completedAt: new Date().toLocaleTimeString() }
+          : l
       );
     } else {
-      const slotTime = id.includes(':') ? id.split(':').pop() || '12:00' : id.replace('screen-', '');
       updated = [
         ...screenLogs,
         {
           id,
           time: slotTime,
           scheduledTimestamp: Date.now(),
-          durationMinutes: screenBreakConfig.breakDurationMinutes,
+          durationMinutes: screenBreakConfig.breakDurationMinutes || 5,
           status,
           completedAt: new Date().toLocaleTimeString(),
         },
@@ -373,7 +1174,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     setScreenLogs(updated);
-    await storageEngine.saveDailyScreenLogs(todayStr, updated);
+    await storageEngine.saveDailyScreenLogs(todayStr, updated, currentUser?.id);
+
+    // Record authoritative lifecycle event in reminderService
+    try {
+      const activeUserId = currentUser?.id || (await authService.getCurrentUser())?.id || '';
+      if (activeUserId) {
+        if (status === 'completed') {
+          await reminderService.recordCompleted(activeUserId, 'look_outside', id, undefined, new Date().toISOString());
+        } else if (status === 'skipped' || status === 'missed') {
+          await reminderService.recordExpired(activeUserId, 'look_outside', id);
+        }
+      }
+    } catch (err) {
+      console.warn('[AppContext] Failed to record screen break event in reminderService:', err);
+    }
   };
 
   // ========================================================
@@ -467,6 +1282,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setRealActiveReminder(event);
 
+    // Record triggered event in reminderService
+    if (currentUser?.id) {
+      if (category === 'water' || category === 'both') {
+        reminderService.recordTriggered(currentUser.id, 'water', extraOpts?.waterSlotId || slotId);
+      }
+      if (category === 'screen' || category === 'both') {
+        reminderService.recordTriggered(currentUser.id, 'look_outside', extraOpts?.screenSlotId || slotId);
+      }
+    }
+
     if (category === 'water') {
       setActiveWaterModalOpen(true);
     } else if (category === 'screen') {
@@ -501,6 +1326,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const skipRealReminder = async (category: 'water' | 'screen' | 'both', slotId: string) => {
+    if (category === 'water') {
+      await markWaterStatus(slotId, 'skipped');
+      setActiveWaterModalOpen(false);
+    } else if (category === 'screen') {
+      await markScreenStatus(slotId, 'skipped');
+      setActiveBreakModalOpen(false);
+    } else {
+      if (realActiveReminder?.waterSlotId) {
+        await markWaterStatus(realActiveReminder.waterSlotId, 'skipped');
+      }
+      if (realActiveReminder?.screenSlotId) {
+        await markScreenStatus(realActiveReminder.screenSlotId, 'skipped');
+      }
+      setActiveWaterModalOpen(false);
+      setActiveBreakModalOpen(false);
+    }
+    setRealActiveReminder(null);
+
+    if ((window as any).eyeflowNative?.skipReminder) {
+      await (window as any).eyeflowNative.skipReminder(category === 'both' ? 'water' : category, slotId);
+    }
+  };
+
   // Reset corrupted development data
   const resetTodayData = async () => {
     const todayStr = getTodayString();
@@ -522,11 +1371,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Test Notifications (Sends native/web notification only, zero state modification)
   const triggerTestWaterNotification = () => {
-    notificationEngine.sendWaterNotification();
+    notificationEngine.sendWaterNotification({
+      sound: notificationSettings.waterSound,
+      soundEnabled: notificationSettings.soundEnabled,
+    });
   };
 
   const triggerTestScreenNotification = () => {
-    notificationEngine.sendScreenBreakNotification();
+    notificationEngine.sendScreenBreakNotification({
+      sound: notificationSettings.lookOutsideSound,
+      soundEnabled: notificationSettings.soundEnabled,
+    });
   };
 
   // Real Test Reminder Trigger in 10s (Fires real notification, opens real modal, records in real history)
@@ -535,10 +1390,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setTimeout(() => {
       if (category === 'water') {
-        notificationEngine.sendWaterNotification();
+        notificationEngine.sendWaterNotification({
+          sound: notificationSettings.waterSound,
+          soundEnabled: notificationSettings.soundEnabled,
+        });
         startRealReminder('water', testSlotId, 10);
       } else {
-        notificationEngine.sendScreenBreakNotification();
+        notificationEngine.sendScreenBreakNotification({
+          sound: notificationSettings.lookOutsideSound,
+          soundEnabled: notificationSettings.soundEnabled,
+        });
         startRealReminder('screen', testSlotId, 10);
       }
     }, 10000);
@@ -551,7 +1412,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const completeOnboarding = async () => {
     setOnboardingCompleted(true);
-    await storageEngine.setOnboardingStatus(true);
+    await storageEngine.setOnboardingStatus(true, currentUser?.id);
   };
 
   // ZERO-POLLING DYNAMIC TIMER SCHEDULER (WEB ONLY)
@@ -575,7 +1436,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!reminderEngine.hasFired(waterSlot.id)) {
         const timer = reminderEngine.scheduleTimer(waterSlot.scheduledTimestamp, () => {
           reminderEngine.markFired(waterSlot.id);
-          notificationEngine.sendWaterNotification();
+          notificationEngine.sendWaterNotification({
+            sound: notificationSettings.waterSound,
+            soundEnabled: notificationSettings.soundEnabled,
+          });
           const duration = (waterConfig.durationMinutes || 2) * 60;
           startRealReminder('water', waterSlot.id, duration);
         });
@@ -589,7 +1453,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!reminderEngine.hasFired(screenSlot.id)) {
         const timer = reminderEngine.scheduleTimer(screenSlot.scheduledTimestamp, () => {
           reminderEngine.markFired(screenSlot.id);
-          notificationEngine.sendScreenBreakNotification();
+          notificationEngine.sendScreenBreakNotification({
+            sound: notificationSettings.lookOutsideSound,
+            soundEnabled: notificationSettings.soundEnabled,
+          });
           const duration = (screenBreakConfig.breakDurationMinutes || 5) * 60;
           startRealReminder('screen', screenSlot.id, duration);
         });
@@ -607,6 +1474,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     waterConfig.enabled,
     screenBreakConfig.enabled,
     notificationSettings.enabled,
+    notificationSettings.waterSound,
+    notificationSettings.lookOutsideSound,
+    notificationSettings.soundEnabled,
   ]);
 
   // 5. Native Mobile Lifecycle Listener (Resync on app resume / return from Android Settings)
@@ -615,10 +1485,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const platform = detectPlatform();
     if (platform === 'android') {
       import('@capacitor/app').then(({ App: CapApp }) => {
-        CapApp.addListener('appStateChange', (state) => {
+        CapApp.addListener('appStateChange', async (state) => {
           if (state.isActive) {
-            console.log('[AppContext] App returned to foreground. Syncing device timestamp...');
+            console.log('[AppContext] App returned to foreground. Performing reconciliation...');
             setCurrentDeviceTimestamp(Date.now());
+            const activeUid = currentUser?.id;
+            if (activeUid) {
+              try {
+                await reminderService.flushOfflineEvents(activeUid);
+                await syncService.syncUserAccount(activeUid);
+                const todayEvents = await reminderService.getTodayEvents(activeUid, generalSettings.timezone);
+                const newWaterLogs: WaterReminderLog[] = [];
+                const newScreenLogs: ScreenBreakLog[] = [];
+
+                for (const ev of todayEvents) {
+                  if (ev.status === 'completed') {
+                    const evDate = new Date(ev.completed_at || ev.scheduled_at || ev.created_at || Date.now());
+                    const timeStr = `${String(evDate.getHours()).padStart(2, '0')}:${String(evDate.getMinutes()).padStart(2, '0')}`;
+                    if (ev.type === 'water') {
+                      if (!newWaterLogs.some((l) => l.id === ev.id)) {
+                        newWaterLogs.push({
+                          id: ev.id,
+                          time: timeStr,
+                          scheduledTimestamp: evDate.getTime(),
+                          status: 'completed',
+                          completedAt: new Date(ev.completed_at || evDate).toLocaleTimeString(),
+                        });
+                      }
+                    } else if (ev.type === 'look_outside' || (ev.type as any) === 'screen') {
+                      if (!newScreenLogs.some((l) => l.id === ev.id)) {
+                        newScreenLogs.push({
+                          id: ev.id,
+                          time: timeStr,
+                          scheduledTimestamp: evDate.getTime(),
+                          durationMinutes: screenBreakConfig.breakDurationMinutes || 5,
+                          status: 'completed',
+                          completedAt: new Date(ev.completed_at || evDate).toLocaleTimeString(),
+                        });
+                      }
+                    }
+                  }
+                }
+                setWaterLogs(newWaterLogs);
+                setScreenLogs(newScreenLogs);
+              } catch (err) {
+                console.warn('[AppContext] App resume reconciliation error:', err);
+              }
+            }
           }
         }).then((listener) => {
           appStateListener = listener;
@@ -631,15 +1544,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         appStateListener.remove();
       }
     };
-  }, []);
+  }, [currentUser?.id, generalSettings.timezone, screenBreakConfig.breakDurationMinutes]);
 
-  // 6. Capacitor Mobile Background Scheduling (Android)
+  // 6. Device Background Scheduling (Android Capacitor & Windows Electron)
   useEffect(() => {
     const platform = detectPlatform();
-    if (platform !== 'android') return;
+    if (platform === 'web') return;
+
+    const currentUserId = currentUser?.id || 'default_user';
 
     if (pauseState.isPaused || !notificationSettings.enabled) {
-      backgroundScheduler.cancelAllNotifications();
+      backgroundScheduler.cancelUserSchedule(currentUserId);
       return;
     }
 
@@ -651,6 +1566,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (slot.status === 'pending' && slot.scheduledTimestamp > now + 2000) {
           scheduledList.push({
             id: slot.id,
+            userId: currentUserId,
             title: '💧 Time for water',
             body: 'Take a 2-minute water break.',
             category: 'water',
@@ -666,6 +1582,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (slot.status === 'pending' && slot.scheduledTimestamp > now + 2000) {
           scheduledList.push({
             id: slot.id,
+            userId: currentUserId,
             title: '👁 Look outside',
             body: 'Give your eyes a short break from the screen.',
             category: 'screen',
@@ -676,7 +1593,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    backgroundScheduler.scheduleLocalNotifications(scheduledList);
+    backgroundScheduler.syncUserSchedule(currentUserId, scheduledList);
   }, [
     scheduleResult.nextWaterSlot?.id,
     scheduleResult.nextScreenSlot?.id,
@@ -685,85 +1602,103 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pauseState,
     notificationSettings.enabled,
     currentDeviceTimestamp,
+    currentUser?.id,
   ]);
 
-  // 7. Capacitor Mobile Notification Tap Listener (Deep Link into Break Screen)
+  // 7. Mobile (Android) & Desktop (Windows) Notification Tap Listeners
   useEffect(() => {
     let actionListener: any = null;
+    let desktopListenerCleanup: (() => void) | null = null;
 
-    async function setupMobileListener() {
+    async function setupListeners() {
       const platform = detectPlatform();
-      if (platform !== 'android') return;
 
-      try {
-        actionListener = await LocalNotifications.addListener(
-          'localNotificationActionPerformed',
-          (action) => {
-            const extra = action.notification.extra;
-            if (extra?.category) {
-              const category = extra.category as 'water' | 'screen' | 'both';
-              const now = Date.now();
-              const startTs = extra.startTimestamp || now;
-              const defaultDuration =
-                category === 'water'
-                  ? (waterConfig.durationMinutes || 2) * 60
-                  : category === 'screen'
-                  ? (screenBreakConfig.breakDurationMinutes || 5) * 60
-                  : Math.max((waterConfig.durationMinutes || 2) * 60, (screenBreakConfig.breakDurationMinutes || 5) * 60);
-
-              const endTs = extra.endTimestamp || startTs + (extra.durationSeconds || defaultDuration) * 1000;
-
-              // STALE NOTIFICATION CHECK
-              if (now >= endTs) {
-                console.log('[AppContext] Notification tapped after expiration window. Marking completed without opening stale timer.');
-                if (category === 'water' && extra.slotId) {
-                  markWaterStatus(extra.slotId, 'completed');
-                } else if (category === 'screen' && extra.slotId) {
-                  markScreenStatus(extra.slotId, 'completed');
-                } else if (category === 'both') {
-                  if (extra.waterSlotId) markWaterStatus(extra.waterSlotId, 'completed');
-                  if (extra.screenSlotId) markScreenStatus(extra.screenSlotId, 'completed');
-                }
+      // Android Capacitor Notification Tap (Opens Reminder UI without auto-completing)
+      if (platform === 'android') {
+        try {
+          actionListener = await LocalNotifications.addListener(
+            'localNotificationActionPerformed',
+            (action) => {
+              const extra = action.notification.extra;
+              if (extra?.userId && currentUser?.id && extra.userId !== currentUser.id) {
+                console.log('[AppContext] Ignored notification from different user account.');
                 return;
               }
 
-              // ACTIVE COUNTDOWN WINDOW (Continuously calculated from actual timestamps)
-              const remainingSecs = Math.max(1, Math.floor((endTs - now) / 1000));
-              startRealReminder(
-                category,
-                extra.slotId || `notif-${now}`,
-                remainingSecs,
-                {
-                  startTimestamp: startTs,
-                  endTimestamp: endTs,
-                  waterDurationSeconds: extra.waterDurationSeconds || (waterConfig.durationMinutes || 2) * 60,
-                  screenDurationSeconds: extra.screenDurationSeconds || (screenBreakConfig.breakDurationMinutes || 5) * 60,
-                  waterSlotId: extra.waterSlotId,
-                  screenSlotId: extra.screenSlotId,
-                  waterEndTimestamp: extra.waterDurationSeconds ? startTs + extra.waterDurationSeconds * 1000 : endTs,
-                  screenEndTimestamp: extra.screenDurationSeconds ? startTs + extra.screenDurationSeconds * 1000 : endTs,
-                }
-              );
+              if (extra?.category) {
+                const category = extra.category as 'water' | 'screen' | 'both';
+                const now = Date.now();
+                const startTs = extra.startTimestamp || now;
+                const defaultDuration =
+                  category === 'water'
+                    ? (waterConfig.durationMinutes || 2) * 60
+                    : category === 'screen'
+                    ? (screenBreakConfig.breakDurationMinutes || 5) * 60
+                    : Math.max((waterConfig.durationMinutes || 2) * 60, (screenBreakConfig.breakDurationMinutes || 5) * 60);
+
+                const endTs = extra.endTimestamp || startTs + (extra.durationSeconds || defaultDuration) * 1000;
+                const remainingSecs = now < endTs ? Math.max(1, Math.floor((endTs - now) / 1000)) : defaultDuration;
+
+                startRealReminder(
+                  category,
+                  extra.slotId || `notif-${now}`,
+                  remainingSecs,
+                  {
+                    startTimestamp: startTs,
+                    endTimestamp: endTs,
+                    waterDurationSeconds: extra.waterDurationSeconds || (waterConfig.durationMinutes || 2) * 60,
+                    screenDurationSeconds: extra.screenDurationSeconds || (screenBreakConfig.breakDurationMinutes || 5) * 60,
+                    waterSlotId: extra.waterSlotId,
+                    screenSlotId: extra.screenSlotId,
+                    waterEndTimestamp: extra.waterDurationSeconds ? startTs + extra.waterDurationSeconds * 1000 : endTs,
+                    screenEndTimestamp: extra.screenDurationSeconds ? startTs + extra.screenDurationSeconds * 1000 : endTs,
+                  }
+                );
+              }
             }
+          );
+        } catch (err) {
+          console.warn('Could not register notification action listener:', err);
+        }
+      }
+
+      // Windows Electron Notification Tap
+      if (platform === 'windows' && (window as any).eyeflowNative?.onNotificationTap) {
+        desktopListenerCleanup = (window as any).eyeflowNative.onNotificationTap((data: any) => {
+          if (data?.userId && currentUser?.id && data.userId !== currentUser.id) {
+            console.log('[AppContext] Windows notification belongs to another user. Ignoring.');
+            return;
           }
-        );
-      } catch (err) {
-        console.warn('Could not register notification action listener:', err);
+          if (data?.category) {
+            const duration = data.category === 'water'
+              ? (waterConfig.durationMinutes || 2) * 60
+              : (screenBreakConfig.breakDurationMinutes || 5) * 60;
+            startRealReminder(data.category, data.slotId || `win-${Date.now()}`, duration);
+          }
+        });
       }
     }
 
-    setupMobileListener();
+    setupListeners();
 
     return () => {
       if (actionListener?.remove) {
         actionListener.remove();
       }
+      if (desktopListenerCleanup) {
+        desktopListenerCleanup();
+      }
     };
-  }, [waterConfig.durationMinutes, screenBreakConfig.breakDurationMinutes]);
+  }, [waterConfig.durationMinutes, screenBreakConfig.breakDurationMinutes, currentUser?.id]);
 
   return (
     <AppContext.Provider
       value={{
+        authState,
+        currentUser,
+        loginUser,
+        logout,
+
         waterConfig,
         setWaterConfig,
         screenBreakConfig,
@@ -814,6 +1749,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         finishPreview,
         startRealReminder,
         completeRealReminder,
+        skipRealReminder,
 
         openBreakModal,
         closeBreakModal,

@@ -1,12 +1,16 @@
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card, Badge, ProgressBar } from './ui';
+import { reminderService } from '../services/reminderService';
 import {
   Droplets,
   Eye,
   ArrowRight,
   Pause,
+  Play,
+  Sliders,
   CheckCircle2,
+  Clock,
 } from 'lucide-react';
 
 function formatCountdown(diffMs: number): string {
@@ -19,15 +23,17 @@ function formatCountdown(diffMs: number): string {
     return `in ${secs}s`;
   }
   if (mins === 1) {
-    return 'in 1 minute';
+    return 'in 1 min';
   }
-  return `in ${mins} minutes`;
+  return `in ${mins} mins`;
 }
 
 export const Dashboard: React.FC = () => {
   const {
+    authState,
     waterConfig,
     screenBreakConfig,
+    generalSettings,
     nextWaterSlot,
     nextScreenSlot,
     waterCompletedCount,
@@ -39,18 +45,24 @@ export const Dashboard: React.FC = () => {
     setActiveTab,
     setActivePauseModalOpen,
     pauseState,
+    setPauseDuration,
     currentDeviceTimestamp,
+    currentUser,
   } = useApp();
 
-  // Greeting based on device local hour
+  // 1. Personalized Greeting
+  const userName =
+    currentUser?.display_name ||
+    (currentUser?.email ? currentUser.email.split('@')[0] : 'there');
+
   const getGreeting = () => {
     const hour = new Date(currentDeviceTimestamp).getHours();
-    if (hour < 12) return 'Good morning, Gowtham.';
-    if (hour < 17) return 'Good afternoon, Gowtham.';
-    return 'Good evening, Gowtham.';
+    if (hour < 12) return `Good morning, ${userName}`;
+    if (hour < 17) return `Good afternoon, ${userName}`;
+    return `Good evening, ${userName}`;
   };
 
-  // Real-time dynamic relative countdowns
+  // Real-time countdowns
   const waterDiffMs = nextWaterSlot
     ? Math.max(0, nextWaterSlot.scheduledTimestamp - currentDeviceTimestamp)
     : null;
@@ -61,33 +73,87 @@ export const Dashboard: React.FC = () => {
     : null;
   const screenCountdown = screenDiffMs !== null ? formatCountdown(screenDiffMs) : null;
 
+  const todayDay = new Date(currentDeviceTimestamp).getDay();
+  const waterActiveDays = waterConfig.activeDays && waterConfig.activeDays.length > 0
+    ? waterConfig.activeDays
+    : [0, 1, 2, 3, 4, 5, 6];
+  const isWaterActiveToday = waterActiveDays.includes(todayDay);
+
+  const screenActiveDays = screenBreakConfig.activeDays && screenBreakConfig.activeDays.length > 0
+    ? screenBreakConfig.activeDays
+    : [0, 1, 2, 3, 4, 5, 6];
+  const isScreenActiveToday = screenActiveDays.includes(todayDay);
+
   // Status determinations
   const isPaused =
     pauseState.isPaused &&
     pauseState.pauseUntil &&
     new Date(pauseState.pauseUntil).getTime() > currentDeviceTimestamp;
 
-  const waterStatus: 'active' | 'paused' | 'disabled' | 'due' = !waterConfig.enabled
+  const waterStatus: 'active' | 'paused' | 'disabled' | 'due' | 'inactive_day' = !waterConfig.enabled
     ? 'disabled'
     : isPaused
     ? 'paused'
+    : !isWaterActiveToday
+    ? 'inactive_day'
     : waterDiffMs !== null && waterDiffMs === 0
     ? 'due'
     : 'active';
 
-  const screenStatus: 'active' | 'paused' | 'disabled' | 'due' = !screenBreakConfig.enabled
+  const screenStatus: 'active' | 'paused' | 'disabled' | 'due' | 'inactive_day' = !screenBreakConfig.enabled
     ? 'disabled'
     : isPaused
     ? 'paused'
+    : !isScreenActiveToday
+    ? 'inactive_day'
     : screenDiffMs !== null && screenDiffMs === 0
     ? 'due'
     : 'active';
 
+  // Authoritative Progress synchronized directly from reminderService
+  const [authoritativeProgress, setAuthoritativeProgress] = useState<{
+    waterCompleted: number;
+    waterTotal: number;
+    screenCompleted: number;
+    screenTotal: number;
+  }>({
+    waterCompleted: waterCompletedCount,
+    waterTotal: waterTotalCount,
+    screenCompleted: screenCompletedCount,
+    screenTotal: screenTotalCount,
+  });
+
+  const syncAuthoritativeProgress = useCallback(async () => {
+    try {
+      const userTz = generalSettings.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      const progress = await reminderService.getTodayProgress(currentUser?.id, { waterConfig, screenBreakConfig, timeZone: userTz });
+      setAuthoritativeProgress({
+        waterCompleted: progress.water.completed,
+        waterTotal: progress.water.expected || waterTotalCount,
+        screenCompleted: progress.lookOutside.completed,
+        screenTotal: progress.lookOutside.expected || screenTotalCount,
+      });
+    } catch (_) {}
+  }, [currentUser?.id, waterConfig, screenBreakConfig, generalSettings.timezone, waterTotalCount, screenTotalCount]);
+
+  useEffect(() => {
+    syncAuthoritativeProgress();
+    const unsub = reminderService.onReminderEvent(() => {
+      syncAuthoritativeProgress();
+    });
+    return () => unsub();
+  }, [syncAuthoritativeProgress]);
+
+  const effectiveWaterCompleted = authoritativeProgress.waterCompleted;
+  const effectiveWaterTotal = authoritativeProgress.waterTotal || waterTotalCount;
+  const effectiveScreenCompleted = authoritativeProgress.screenCompleted;
+  const effectiveScreenTotal = authoritativeProgress.screenTotal || screenTotalCount;
+
   // Progress calculations
   const waterProgress =
-    waterTotalCount > 0 ? Math.round((waterCompletedCount / waterTotalCount) * 100) : 0;
+    effectiveWaterTotal > 0 ? Math.min(100, Math.round((effectiveWaterCompleted / effectiveWaterTotal) * 100)) : 0;
   const screenProgress =
-    screenTotalCount > 0 ? Math.round((screenCompletedCount / screenTotalCount) * 100) : 0;
+    effectiveScreenTotal > 0 ? Math.min(100, Math.round((effectiveScreenCompleted / effectiveScreenTotal) * 100)) : 0;
 
   // Recent completed timeline
   const recentEvents = [
@@ -98,7 +164,6 @@ export const Dashboard: React.FC = () => {
         time: l.time,
         type: 'water' as const,
         label: 'Water Break',
-        status: 'completed',
       })),
     ...screenLogs
       .filter((l) => l.status === 'completed')
@@ -107,28 +172,27 @@ export const Dashboard: React.FC = () => {
         time: l.time,
         type: 'screen' as const,
         label: 'Look Outside',
-        status: 'completed',
       })),
   ]
     .sort((a, b) => b.time.localeCompare(a.time))
-    .slice(0, 4);
+    .slice(0, 3);
 
   return (
-    <div className="space-y-9 select-none">
-      {/* 1. Header Greeting */}
+    <div className="space-y-8 select-none max-w-4xl mx-auto pb-8">
+      {/* 1. TOP GREETING */}
       <div className="space-y-1">
-        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-[var(--text-primary)]">
           {getGreeting()}
         </h1>
-        <p className="text-xs sm:text-sm text-[var(--text-secondary)] font-normal">
-          Take a moment for yourself today.
+        <p className="text-xs sm:text-sm text-[var(--text-secondary)]">
+          Take a moment for your eyes and hydration today.
         </p>
       </div>
 
-      {/* 2. Primary Section: NEXT REMINDERS (Equal Side-by-Side Cards) */}
+      {/* 2. NEXT REMINDERS (Desktop: 2 columns, Mobile: 1 column stacked) */}
       <div className="space-y-3.5">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider">
+          <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider">
             NEXT REMINDERS
           </span>
           {isPaused && (
@@ -138,27 +202,25 @@ export const Dashboard: React.FC = () => {
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {/* Card 1: 💧 WATER */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5">
+          {/* Card 1: Water */}
           <Card
             variant="default"
             padding="lg"
-            className="flex flex-col justify-between space-y-6 border-[var(--border-subtle)] hover:border-[var(--water-border)] transition-all"
+            className="flex flex-col justify-between space-y-6 border-[var(--border-subtle)] hover:border-[var(--water-border)] transition-all bg-[var(--bg-surface)]"
           >
             <div className="space-y-4">
               {/* Header */}
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-[var(--water-subtle)] text-[var(--water-primary)] flex items-center justify-center border border-[var(--water-border)]">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-[var(--water-subtle)] text-[var(--water-primary)] flex items-center justify-center border border-[var(--water-border)]">
                     <Droplets className="w-4 h-4" />
                   </div>
                   <div>
-                    <span className="text-xs font-bold text-[var(--text-primary)] tracking-tight block">
-                      WATER
+                    <span className="text-sm font-bold text-[var(--text-primary)] tracking-tight block">
+                      Water
                     </span>
-                    <span className="text-[11px] text-[var(--text-muted)]">
-                      Hydration reminder
-                    </span>
+                    <span className="text-xs text-[var(--text-muted)]">Hydration reminder</span>
                   </div>
                 </div>
 
@@ -178,89 +240,113 @@ export const Dashboard: React.FC = () => {
                     ? 'Due Now'
                     : waterStatus === 'paused'
                     ? 'Paused'
+                    : waterStatus === 'inactive_day'
+                    ? 'Inactive Today'
                     : 'Disabled'}
                 </Badge>
               </div>
 
-              {/* Main Time & Countdown */}
+              {/* Next Time & Remaining */}
               <div className="pt-2">
-                {waterStatus === 'disabled' ? (
+                {authState === 'checking' ? (
                   <div className="space-y-1">
-                    <span className="text-xl font-bold text-[var(--text-muted)]">
-                      Reminders Disabled
+                    <span className="text-lg font-bold text-[var(--text-muted)] animate-pulse">
+                      Loading configuration...
                     </span>
                     <p className="text-xs text-[var(--text-muted)]">
-                      Turn on water reminders in settings.
+                      Synchronizing with cloud.
+                    </p>
+                  </div>
+                ) : waterStatus === 'disabled' ? (
+                  <div className="space-y-1">
+                    <span className="text-lg font-bold text-[var(--text-muted)]">Disabled</span>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      Water reminders are turned off in settings.
                     </p>
                   </div>
                 ) : waterStatus === 'paused' ? (
                   <div className="space-y-1">
-                    <span className="text-xl font-bold text-[var(--warning-primary)]">
-                      Paused
-                    </span>
+                    <span className="text-lg font-bold text-[var(--warning-primary)]">Paused</span>
                     <p className="text-xs text-[var(--text-muted)]">
                       Reminders will resume automatically.
                     </p>
                   </div>
-                ) : nextWaterSlot ? (
+                ) : waterStatus === 'inactive_day' ? (
                   <div className="space-y-1">
-                    <div className="flex items-baseline gap-2.5">
+                    <span className="text-lg font-bold text-[var(--text-muted)]">
+                      Inactive Today
+                    </span>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      No water reminders scheduled for today.
+                    </p>
+                  </div>
+                ) : nextWaterSlot ? (
+                  <div className="space-y-1.5">
+                    <div className="flex items-baseline gap-3">
                       <span className="text-3xl sm:text-4xl font-extrabold text-[var(--text-primary)] font-mono tracking-tight">
                         {nextWaterSlot.time}
                       </span>
-                      <span className="text-xs font-bold text-[var(--water-primary)]">
+                      <span className="text-xs font-bold text-[var(--water-primary)] px-2 py-0.5 rounded-md bg-[var(--water-subtle)]">
                         {waterCountdown}
                       </span>
                     </div>
                     <p className="text-xs text-[var(--text-secondary)]">
-                      Drink some water to stay refreshed.
+                      {(waterConfig.durationMinutes || 2)} min reminder duration
+                    </p>
+                  </div>
+                ) : waterTotalCount > 0 && waterCompletedCount >= waterTotalCount ? (
+                  <div className="space-y-1">
+                    <span className="text-lg font-bold text-[var(--text-primary)]">
+                      All done for today
+                    </span>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      Completed all {waterTotalCount} scheduled water breaks.
                     </p>
                   </div>
                 ) : (
                   <div className="space-y-1">
-                    <span className="text-xl font-bold text-[var(--text-primary)]">
-                      All done for today
+                    <span className="text-lg font-bold text-[var(--text-secondary)]">
+                      No Remaining Slots
                     </span>
                     <p className="text-xs text-[var(--text-muted)]">
-                      Completed all scheduled water breaks.
+                      Scheduled schedule window ended for today.
                     </p>
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Action */}
+            {/* Quick Link to Water Settings */}
             <div className="pt-3 border-t border-[var(--border-subtle)]">
               <button
+                type="button"
                 onClick={() => setActiveTab('water')}
                 className="w-full flex items-center justify-between text-xs font-semibold text-[var(--water-primary)] hover:text-[var(--text-primary)] transition-all cursor-pointer py-1"
               >
-                <span>View reminder</span>
+                <span>Water settings</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
           </Card>
 
-          {/* Card 2: 👁 LOOK OUTSIDE */}
+          {/* Card 2: Look Outside */}
           <Card
             variant="default"
             padding="lg"
-            className="flex flex-col justify-between space-y-6 border-[var(--border-subtle)] hover:border-[var(--screen-border)] transition-all"
+            className="flex flex-col justify-between space-y-6 border-[var(--border-subtle)] hover:border-[var(--screen-border)] transition-all bg-[var(--bg-surface)]"
           >
             <div className="space-y-4">
               {/* Header */}
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-[var(--screen-subtle)] text-[var(--screen-primary)] flex items-center justify-center border border-[var(--screen-border)]">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-[var(--screen-subtle)] text-[var(--screen-primary)] flex items-center justify-center border border-[var(--screen-border)]">
                     <Eye className="w-4 h-4" />
                   </div>
                   <div>
-                    <span className="text-xs font-bold text-[var(--text-primary)] tracking-tight block">
-                      LOOK OUTSIDE
+                    <span className="text-sm font-bold text-[var(--text-primary)] tracking-tight block">
+                      Look Outside
                     </span>
-                    <span className="text-[11px] text-[var(--text-muted)]">
-                      Screen break
-                    </span>
+                    <span className="text-xs text-[var(--text-muted)]">Screen break</span>
                   </div>
                 </div>
 
@@ -280,64 +366,90 @@ export const Dashboard: React.FC = () => {
                     ? 'Due Now'
                     : screenStatus === 'paused'
                     ? 'Paused'
+                    : screenStatus === 'inactive_day'
+                    ? 'Inactive Today'
                     : 'Disabled'}
                 </Badge>
               </div>
 
-              {/* Main Time & Countdown */}
+              {/* Next Time & Remaining */}
               <div className="pt-2">
-                {screenStatus === 'disabled' ? (
+                {authState === 'checking' ? (
                   <div className="space-y-1">
-                    <span className="text-xl font-bold text-[var(--text-muted)]">
-                      Reminders Disabled
+                    <span className="text-lg font-bold text-[var(--text-muted)] animate-pulse">
+                      Loading configuration...
                     </span>
                     <p className="text-xs text-[var(--text-muted)]">
-                      Turn on screen breaks in settings.
+                      Synchronizing with cloud.
+                    </p>
+                  </div>
+                ) : screenStatus === 'disabled' ? (
+                  <div className="space-y-1">
+                    <span className="text-lg font-bold text-[var(--text-muted)]">Disabled</span>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      Screen breaks are turned off in settings.
                     </p>
                   </div>
                 ) : screenStatus === 'paused' ? (
                   <div className="space-y-1">
-                    <span className="text-xl font-bold text-[var(--warning-primary)]">
-                      Paused
-                    </span>
+                    <span className="text-lg font-bold text-[var(--warning-primary)]">Paused</span>
                     <p className="text-xs text-[var(--text-muted)]">
                       Screen breaks will resume automatically.
                     </p>
                   </div>
-                ) : nextScreenSlot ? (
+                ) : screenStatus === 'inactive_day' ? (
                   <div className="space-y-1">
-                    <div className="flex items-baseline gap-2.5">
+                    <span className="text-lg font-bold text-[var(--text-muted)]">
+                      Inactive Today
+                    </span>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      No screen breaks scheduled for today.
+                    </p>
+                  </div>
+                ) : nextScreenSlot ? (
+                  <div className="space-y-1.5">
+                    <div className="flex items-baseline gap-3">
                       <span className="text-3xl sm:text-4xl font-extrabold text-[var(--text-primary)] font-mono tracking-tight">
                         {nextScreenSlot.time}
                       </span>
-                      <span className="text-xs font-bold text-[var(--screen-primary)]">
+                      <span className="text-xs font-bold text-[var(--screen-primary)] px-2 py-0.5 rounded-md bg-[var(--screen-subtle)]">
                         {screenCountdown}
                       </span>
                     </div>
                     <p className="text-xs text-[var(--text-secondary)]">
-                      Give your eyes a short break.
+                      {(screenBreakConfig.breakDurationMinutes || 5)} min eye break duration
+                    </p>
+                  </div>
+                ) : screenTotalCount > 0 && screenCompletedCount >= screenTotalCount ? (
+                  <div className="space-y-1">
+                    <span className="text-lg font-bold text-[var(--text-primary)]">
+                      All done for today
+                    </span>
+                    <p className="text-xs text-[var(--text-muted)]">
+                      Completed all {screenTotalCount} scheduled breaks for today.
                     </p>
                   </div>
                 ) : (
                   <div className="space-y-1">
-                    <span className="text-xl font-bold text-[var(--text-primary)]">
-                      All done for today
+                    <span className="text-lg font-bold text-[var(--text-secondary)]">
+                      No Remaining Slots
                     </span>
                     <p className="text-xs text-[var(--text-muted)]">
-                      Completed all scheduled breaks for today.
+                      Scheduled schedule window ended for today.
                     </p>
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Action */}
+            {/* Quick Link to Look Outside Settings */}
             <div className="pt-3 border-t border-[var(--border-subtle)]">
               <button
+                type="button"
                 onClick={() => setActiveTab('screenbreak')}
                 className="w-full flex items-center justify-between text-xs font-semibold text-[var(--screen-primary)] hover:text-[var(--text-primary)] transition-all cursor-pointer py-1"
               >
-                <span>View reminder</span>
+                <span>Look Outside settings</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -346,43 +458,44 @@ export const Dashboard: React.FC = () => {
       </div>
 
       {/* 3. TODAY'S PROGRESS */}
-      <Card variant="default" padding="lg" className="space-y-5">
+      <Card variant="default" padding="lg" className="space-y-5 bg-[var(--bg-surface)]">
         <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
           <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider">
             TODAY'S PROGRESS
           </span>
           <button
+            type="button"
             onClick={() => setActiveTab('statistics')}
             className="text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1 transition-all cursor-pointer"
           >
-            Detailed statistics <ArrowRight className="w-3 h-3" />
+            View analytics <ArrowRight className="w-3 h-3" />
           </button>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
           {/* Water Progress */}
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             <div className="flex items-center justify-between text-xs">
               <div className="flex items-center gap-2">
-                <Droplets className="w-3.5 h-3.5 text-[var(--water-primary)]" />
+                <Droplets className="w-4 h-4 text-[var(--water-primary)]" />
                 <span className="font-semibold text-[var(--text-primary)]">Water</span>
               </div>
-              <span className="font-mono text-[var(--text-muted)]">
-                {waterCompletedCount} / {waterTotalCount} ({waterProgress}%)
+              <span className="font-mono font-medium text-[var(--text-secondary)]">
+                {effectiveWaterCompleted} / {effectiveWaterTotal} ({waterProgress}%)
               </span>
             </div>
             <ProgressBar value={waterProgress} variant="water" size="md" />
           </div>
 
           {/* Look Outside Progress */}
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             <div className="flex items-center justify-between text-xs">
               <div className="flex items-center gap-2">
-                <Eye className="w-3.5 h-3.5 text-[var(--screen-primary)]" />
+                <Eye className="w-4 h-4 text-[var(--screen-primary)]" />
                 <span className="font-semibold text-[var(--text-primary)]">Look Outside</span>
               </div>
-              <span className="font-mono text-[var(--text-muted)]">
-                {screenCompletedCount} / {screenTotalCount} ({screenProgress}%)
+              <span className="font-mono font-medium text-[var(--text-secondary)]">
+                {effectiveScreenCompleted} / {effectiveScreenTotal} ({screenProgress}%)
               </span>
             </div>
             <ProgressBar value={screenProgress} variant="screen" size="md" />
@@ -392,40 +505,56 @@ export const Dashboard: React.FC = () => {
 
       {/* 4. QUICK ACTIONS */}
       <div className="space-y-3">
-        <span className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">
+        <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block">
           QUICK ACTIONS
         </span>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Pause / Resume Button */}
           <button
+            type="button"
+            onClick={() => {
+              if (isPaused) {
+                setPauseDuration(null);
+              } else {
+                setActivePauseModalOpen(true);
+              }
+            }}
+            className="min-h-[48px] p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-between text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer"
+          >
+            <div className="flex items-center gap-2.5">
+              {isPaused ? (
+                <Play className="w-4 h-4 text-[var(--success-primary)]" />
+              ) : (
+                <Pause className="w-4 h-4 text-[var(--warning-primary)]" />
+              )}
+              <span>{isPaused ? 'Resume reminders' : 'Pause reminders'}</span>
+            </div>
+            <ArrowRight className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+          </button>
+
+          {/* Water Settings */}
+          <button
+            type="button"
             onClick={() => setActiveTab('water')}
-            className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-between text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer"
+            className="min-h-[48px] p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-between text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer"
           >
             <div className="flex items-center gap-2.5">
               <Droplets className="w-4 h-4 text-[var(--water-primary)]" />
-              <span>Water schedule</span>
+              <span>Water settings</span>
             </div>
             <ArrowRight className="w-3.5 h-3.5 text-[var(--text-muted)]" />
           </button>
 
+          {/* Look Outside Settings */}
           <button
+            type="button"
             onClick={() => setActiveTab('screenbreak')}
-            className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-between text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer"
+            className="min-h-[48px] p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-between text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer"
           >
             <div className="flex items-center gap-2.5">
-              <Eye className="w-4 h-4 text-[var(--screen-primary)]" />
+              <Sliders className="w-4 h-4 text-[var(--screen-primary)]" />
               <span>Look Outside settings</span>
-            </div>
-            <ArrowRight className="w-3.5 h-3.5 text-[var(--text-muted)]" />
-          </button>
-
-          <button
-            onClick={() => setActivePauseModalOpen(true)}
-            className="p-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-between text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all cursor-pointer"
-          >
-            <div className="flex items-center gap-2.5">
-              <Pause className="w-4 h-4 text-[var(--warning-primary)]" />
-              <span>{isPaused ? 'Resume reminders' : 'Pause reminders'}</span>
             </div>
             <ArrowRight className="w-3.5 h-3.5 text-[var(--text-muted)]" />
           </button>
@@ -433,13 +562,13 @@ export const Dashboard: React.FC = () => {
       </div>
 
       {/* 5. RECENT ACTIVITY */}
-      <div className="space-y-3 pt-2">
-        <span className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider block">
+      <div className="space-y-3 pt-1">
+        <span className="text-xs font-bold text-[var(--text-muted)] uppercase tracking-wider block">
           RECENT ACTIVITY
         </span>
 
         {recentEvents.length === 0 ? (
-          <Card variant="default" padding="md" className="text-center py-6">
+          <Card variant="default" padding="md" className="text-center py-6 bg-[var(--bg-surface)]">
             <p className="text-xs text-[var(--text-muted)]">
               No activity logged yet today. Completed reminders will appear here.
             </p>
@@ -449,21 +578,20 @@ export const Dashboard: React.FC = () => {
             {recentEvents.map((evt) => (
               <div
                 key={evt.id}
-                className="flex items-center justify-between py-2.5 px-3.5 rounded-[var(--radius-md)] bg-[var(--bg-subtle)] border border-[var(--border-subtle)] text-xs"
+                className="flex items-center justify-between py-2.5 px-3.5 rounded-[var(--radius-md)] bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs"
               >
                 <div className="flex items-center gap-3">
-                  <span className="font-mono text-[var(--text-muted)] text-[11px]">
+                  <span className="font-mono text-[var(--text-muted)] text-[11px] flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
                     {evt.time}
                   </span>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     {evt.type === 'water' ? (
                       <Droplets className="w-3.5 h-3.5 text-[var(--water-primary)]" />
                     ) : (
                       <Eye className="w-3.5 h-3.5 text-[var(--screen-primary)]" />
                     )}
-                    <span className="font-medium text-[var(--text-primary)]">
-                      {evt.label}
-                    </span>
+                    <span className="font-medium text-[var(--text-primary)]">{evt.label}</span>
                   </div>
                 </div>
 

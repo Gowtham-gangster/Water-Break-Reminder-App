@@ -22,6 +22,7 @@ export interface NotificationPayload {
 
 export interface ScheduledNotification {
   id: string;
+  userId?: string;
   title: string;
   body: string;
   category: 'water' | 'screen';
@@ -39,6 +40,8 @@ export interface INotificationService {
 
 export interface IBackgroundSchedulerService {
   scheduleLocalNotifications(notifications: ScheduledNotification[]): Promise<void>;
+  syncUserSchedule(userId: string, notifications: ScheduledNotification[]): Promise<void>;
+  cancelUserSchedule(userId: string): Promise<void>;
   cancelAllNotifications(): Promise<void>;
   pause(minutes: number | 'tomorrow'): Promise<void>;
   resume(): Promise<void>;

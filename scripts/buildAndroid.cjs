@@ -4,12 +4,12 @@ const path = require('path');
 const crypto = require('crypto');
 
 console.log('========================================');
-console.log('  EYEFLOW ANDROID BUILD PIPELINE        ');
+console.log('  PAUSEFLOW ANDROID BUILD PIPELINE      ');
 console.log('========================================');
 
 const rootDir = path.resolve(__dirname, '..');
 const androidDir = path.join(rootDir, 'android');
-const releaseDir = path.join(rootDir, 'release');
+const releaseDir = path.join(rootDir, 'releases', 'android');
 const gradleBat = path.join(androidDir, 'gradlew.bat');
 
 fs.mkdirSync(releaseDir, { recursive: true });
@@ -22,18 +22,27 @@ execSync('npm run build', { cwd: rootDir, stdio: 'inherit' });
 console.log('\n[2/4] Syncing assets & plugins with Capacitor Android...');
 execSync('npx cap sync android', { cwd: rootDir, stdio: 'inherit' });
 
-// 3. Clean & Assemble Debug APK with Gradle
-console.log('\n[3/4] Compiling Android Debug APK (gradlew clean assembleDebug)...');
+// 3. Clean & Assemble Release APK with Gradle
+console.log('\n[3/4] Compiling Android Release APK (gradlew clean assembleRelease)...');
 const sdkDir = path.join(process.env.LOCALAPPDATA || 'C:\\Users\\P Gowtham\\AppData\\Local', 'Android', 'Sdk');
-execSync(`"${gradleBat}" clean assembleDebug`, {
+execSync(`"${gradleBat}" clean assembleRelease`, {
   cwd: androidDir,
   stdio: 'inherit',
   env: { ...process.env, ANDROID_HOME: sdkDir, ANDROID_SDK_ROOT: sdkDir }
 });
 
-// 4. Copy APK to release/
-const outputApk = path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
-const targetApk = path.join(releaseDir, 'EyeFlow-debug.apk');
+// 4. Copy APK to releases/android/PauseFlow.apk
+const outputReleaseApk = path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk');
+const outputReleaseUnsignedApk = path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'release', 'app-release-unsigned.apk');
+const outputDebugApk = path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
+
+const outputApk = fs.existsSync(outputReleaseApk)
+  ? outputReleaseApk
+  : fs.existsSync(outputReleaseUnsignedApk)
+  ? outputReleaseUnsignedApk
+  : outputDebugApk;
+
+const targetApk = path.join(releaseDir, 'PauseFlow.apk');
 
 if (fs.existsSync(outputApk)) {
   fs.copyFileSync(outputApk, targetApk);
@@ -43,9 +52,10 @@ if (fs.existsSync(outputApk)) {
   const fileBuffer = fs.readFileSync(targetApk);
   const sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
-  console.log('\n[4/4] EyeFlow Android APK generated successfully!');
+  console.log('\n[4/4] PauseFlow Android Release APK generated successfully!');
   console.log('----------------------------------------');
-  console.log(`Artifact: release/EyeFlow-debug.apk`);
+  console.log(`Source:   ${outputApk}`);
+  console.log(`Artifact: releases/android/PauseFlow.apk`);
   console.log(`Size:     ${sizeMb} MB (${stat.size} bytes)`);
   console.log(`SHA256:   ${sha256}`);
   console.log('----------------------------------------');

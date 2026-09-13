@@ -44,6 +44,9 @@
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-xl: 24px;
+
+  /* Layout Insets */
+  --mobile-nav-height: 64px;
 }
 
 [data-theme="dark"] {
@@ -78,6 +81,19 @@
   --warning-subtle: rgba(251, 191, 36, 0.12);
   --danger-primary: #F87171;
   --danger-subtle: rgba(248, 113, 113, 0.12);
+
+  --mobile-nav-height: 64px;
+}
+
+/* Mobile Content Inset Helper for Clean Scrolling Above Fixed Bottom Navigation */
+.mobile-bottom-inset {
+  padding-bottom: calc(var(--mobile-nav-height, 64px) + env(safe-area-inset-bottom, 0px) + 28px);
+}
+
+@media (min-width: 768px) {
+  .mobile-bottom-inset {
+    padding-bottom: 2.5rem; /* 40px */
+  }
 }
 
 body {
@@ -111,3 +127,80 @@ body {
 .animate-scale-up {
   animation: scaleUp 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* Global Form Controls & Options Styling */
+select, option {
+  background-color: var(--bg-surface) !important;
+  color: var(--text-primary) !important;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  width: 100%;
+}
+
+.form-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.form-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.875rem;
+  border-radius: var(--radius-md);
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  transition: all 0.15s ease;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.form-input:focus {
+  border-color: var(--water-primary);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.25);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  transition: all 0.15s ease;
+  cursor: pointer;
+  outline: none;
+  border: none;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background-color: var(--water-primary);
+  color: #FFFFFF;
+}
+
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.92;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3);
+}
+
+.btn-outline {
+  background-color: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background-color: var(--bg-subtle);
+}
+

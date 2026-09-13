@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Droplets, Eye, Wind } from 'lucide-react';
 import { notificationService } from '../platform';
+import { reminderService } from '../services/reminderService';
+import { authService } from '../services/authService';
 
 export interface ActiveReminderItem {
   type: 'water' | 'screen';
@@ -47,6 +49,69 @@ export const StandaloneReminder: React.FC = () => {
   const completedSlotsRef = useRef<Set<string>>(new Set());
   const [currentTimestamp, setCurrentTimestamp] = useState<number>(Date.now());
 
+  const handleCompleteItem = async (item: ActiveReminderItem) => {
+    if (completedSlotsRef.current.has(item.slotId)) return;
+    completedSlotsRef.current.add(item.slotId);
+
+    // Play audio chime for this specific completion
+    if (item.type === 'water') {
+      notificationService.playWaterChime();
+    } else {
+      notificationService.playScreenBell();
+    }
+
+    // Direct event recording in reminderService for 100% data reliability
+    if (!item.isPreview) {
+      try {
+        const user = await authService.getCurrentUser();
+        const userId = user?.id || '';
+        if (userId) {
+          const cat = item.type === 'screen' ? 'look_outside' : item.type;
+          await reminderService.recordCompleted(userId, cat, item.slotId, item.scheduledAt);
+        }
+      } catch (err) {
+        console.warn('[StandaloneReminder] Event persistence error:', err);
+      }
+    }
+
+    // Complete reminder in native main process immediately
+    if ((window as any).eyeflowNative?.completeReminderItem) {
+      (window as any).eyeflowNative.completeReminderItem(
+        item.type,
+        item.slotId,
+        item.isPreview
+      );
+    }
+  };
+
+  const handleSkipItem = async (item: ActiveReminderItem) => {
+    if (completedSlotsRef.current.has(item.slotId)) return;
+    completedSlotsRef.current.add(item.slotId);
+
+    // Direct event recording in reminderService for 100% data reliability
+    if (!item.isPreview) {
+      try {
+        const user = await authService.getCurrentUser();
+        const userId = user?.id || '';
+        if (userId) {
+          const cat = item.type === 'screen' ? 'look_outside' : item.type;
+          await reminderService.recordExpired(userId, cat, item.slotId);
+        }
+      } catch (err) {
+        console.warn('[StandaloneReminder] Event expiration persistence error:', err);
+      }
+    }
+
+    // Skip reminder in native main process immediately
+    if ((window as any).eyeflowNative?.skipReminderItem) {
+      (window as any).eyeflowNative.skipReminderItem(
+        item.type,
+        item.slotId,
+        item.isPreview
+      );
+    }
+  };
+
   // 1. Fetch initial active reminders from Native Electron Bridge & listen to dynamic updates
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -86,23 +151,7 @@ export const StandaloneReminder: React.FC = () => {
       const remaining = Math.max(0, item.endTimestamp - currentTimestamp);
 
       if (remaining === 0 && !completedSlotsRef.current.has(item.slotId)) {
-        completedSlotsRef.current.add(item.slotId);
-
-        // Play audio chime for this specific completion
-        if (item.type === 'water') {
-          notificationService.playWaterChime();
-        } else {
-          notificationService.playScreenBell();
-        }
-
-        // Complete reminder in native main process immediately
-        if ((window as any).eyeflowNative?.completeReminderItem) {
-          (window as any).eyeflowNative.completeReminderItem(
-            item.type,
-            item.slotId,
-            item.isPreview
-          );
-        }
+        handleCompleteItem(item);
       }
     });
   }, [currentTimestamp, activeReminders]);
@@ -162,8 +211,21 @@ export const StandaloneReminder: React.FC = () => {
             <p className="text-[11px] text-slate-400 font-medium">
               {item.isPreview
                 ? `Preview closes in ${formattedTime}`
-                : `Stay hydrated • Disappears in ${formattedTime}`}
+                : `Take a slow sip • Window closes automatically in ${formattedTime}`}
             </p>
+
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSkipItem(item);
+                }}
+                className="px-4 py-1.5 rounded-full text-xs font-semibold text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-700/80 border border-slate-700/50 transition-colors"
+              >
+                Skip Break
+              </button>
+            </div>
           </div>
         </div>
       );
@@ -236,6 +298,19 @@ export const StandaloneReminder: React.FC = () => {
           <p className="text-[11px] text-slate-400 font-medium">
             Look 20+ feet away • Ends in {formattedTime}
           </p>
+
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleSkipItem(item);
+              }}
+              className="px-4 py-1.5 rounded-full text-xs font-semibold text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-700/80 border border-slate-700/50 transition-colors"
+            >
+              Skip Break
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -261,7 +336,7 @@ export const StandaloneReminder: React.FC = () => {
           {/* Header */}
           <div className="text-center space-y-1">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-              EyeFlow
+              PauseFlow
             </span>
             <h1 className="text-2xl font-black text-white tracking-tight">
               TIME FOR A BREAK
