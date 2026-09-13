@@ -6,34 +6,6 @@
 
 ---
 
-## 📑 Table of Contents
-
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Supported Platforms](#supported-platforms)
-- [System Architecture](#system-architecture)
-- [Reminder & Notification Pipeline](#reminder--notification-pipeline)
-- [Completion Semantics](#completion-semantics)
-- [Android Native Architecture](#android-native-architecture)
-- [Scheduling & Event Identity](#scheduling--event-identity)
-- [Cross-Device Cloud Synchronization](#cross-device-cloud-synchronization)
-- [Offline Resilience](#offline-resilience)
-- [Statistics & Streak Engine](#statistics--streak-engine)
-- [Database Schema (Supabase)](#database-schema-supabase)
-- [Technology Stack](#technology-stack)
-- [Project Directory Structure](#project-directory-structure)
-- [Prerequisites](#prerequisites)
-- [Development Setup](#development-setup)
-- [Environment Variables](#environment-variables)
-- [Available Scripts](#available-scripts)
-- [Build & Packaging](#build--packaging)
-- [Release Artifacts](#release-artifacts)
-- [Testing & Validation](#testing--validation)
-- [Security & Privacy](#security--privacy)
-- [License](#license)
-
----
-
 ## 🌟 Overview
 
 Modern digital screen work causes chronic eye fatigue and dehydration. PauseFlow addresses this by enforcing consistent, non-intrusive wellness habits:
@@ -273,8 +245,11 @@ All database tables, constraints, RLS policies, and triggers are defined in [`su
 ├── desktop/                  # Electron desktop support files and tray manager
 ├── public/                   # Public static web assets and favicons
 ├── releases/                 # Release packages
-│   └── android/
-│       └── PauseFlow.apk     # Production Android Release APK
+│   ├── android/
+│   │   └── PauseFlow.apk     # Production Android Release APK
+│   └── desktop/
+│       ├── install.bat       # Windows desktop installation script
+│       └── uninstall.bat     # Windows desktop uninstallation script
 ├── src/                      # Application source code
 │   ├── assets/               # Brand logos and images
 │   ├── components/           # UI components, modals, break screens, layouts
