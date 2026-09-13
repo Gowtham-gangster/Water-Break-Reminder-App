@@ -1,5 +1,6 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
+import { pauseService } from '../../services/pauseService';
 import { Sun, Moon, Pause, LogOut } from 'lucide-react';
 import { BrandLogo } from '../ui';
 
@@ -13,6 +14,8 @@ export const Header: React.FC = () => {
     currentUser,
     logout,
   } = useApp();
+
+  const isPaused = pauseService.isRemindersPaused(pauseState, Date.now());
 
   const [avatarLoadFailed, setAvatarLoadFailed] = React.useState(false);
 
@@ -52,7 +55,7 @@ export const Header: React.FC = () => {
           </button>
         )}
 
-        {pauseState.isPaused && (
+        {isPaused && (
           <button
             onClick={() => setActivePauseModalOpen(true)}
             className="px-2.5 py-1 rounded-md bg-[var(--warning-subtle)] text-[var(--warning-primary)] text-[11px] font-semibold flex items-center gap-1.5"

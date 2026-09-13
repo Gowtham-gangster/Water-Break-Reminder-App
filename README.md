@@ -1,123 +1,136 @@
-# EyeFlow — Digital Wellness Desktop Application
+# PauseFlow — Digital Wellness Multi-Platform Application
 
 > **"Drink water. Look away. Feel better."**
 
-EyeFlow is a native digital wellness Windows desktop application built with React, TypeScript, Vite, and Electron. It protects eyesight and promotes consistent hydration with an autonomous **24/7 background scheduler**, **system tray presence**, **native Windows toast notifications**, and **focused reminder countdown overlays** that automatically release input blocking at 00:00.
+**PauseFlow** is a modern, cross-platform digital wellness application (**Web**, **Android**, and **Windows Desktop**) built with **React**, **TypeScript**, **Vite**, **Electron**, **Capacitor**, and **Supabase**. It protects eyesight and promotes consistent hydration with an autonomous **24/7 background scheduler**, **native toast & mobile notifications**, **cross-device cloud synchronization**, and **focused reminder countdown overlays**.
 
 ---
 
-## 📦 Beta Distribution Artifacts
+## 📱 Cross-Platform Support
 
-The standalone production releases are packaged ready for distribution in the `release/` directory:
-
-| Package Type | File Path | Description |
-|---|---|---|
-| **Windows Installer (Recommended)** | [`release/EyeFlow-Setup-1.0.0.exe`](file:///release/EyeFlow-Setup-1.0.0.exe) | Standard NSIS installer for Windows 10 & 11 (64-bit). Creates Desktop & Start Menu shortcuts, registers in Windows Settings > Installed Apps, and supports clean uninstallation. |
-| **Portable Archive** | [`release/EyeFlow-1.0.0-win-x64-portable.zip`](file:///release/EyeFlow-1.0.0-win-x64-portable.zip) | Standalone portable zero-install archive. Extract anywhere and launch `EyeFlow.exe` directly. |
-
-> [!NOTE]
-> Neither package requires Node.js, npm, or any development dependencies on the end-user's machine.
+| Platform | Runtime | Distribution Artifact | Key Features |
+| :--- | :--- | :--- | :--- |
+| **Android** | Capacitor 8 / Android Native | `releases/android/PauseFlow.apk` | Native AlarmManager background alarms, custom notification sound, lock screen actions. |
+| **Windows Desktop** | Electron 43 | `dist-electron/win-unpacked/PauseFlow.exe` | System Tray integration, Windows Toast notifications, focused non-blocking modal overlay. |
+| **Web** | Modern Browsers | `dist/` | Offline PWA support, reactive Realtime synchronization. |
 
 ---
 
-## 🏗️ Architecture & Core Components
+## ✨ Core Features
+
+1. **Hydration (Water) Reminders**:
+   - Customizable intervals, daily active hours, active days of the week, and sound effects.
+   - Idempotent logging and dynamic progress tracking.
+
+2. **Look Outside (Screen Break) Reminders**:
+   - 20-20-20 rule wellness breaks with fullscreen or popup countdowns.
+   - Auto-dismiss at `00:00` with input release.
+
+3. **Global Pause / Resume State**:
+   - Pause reminders for 30m, 1h, 2h, or the rest of the day.
+   - Authoritative cloud persistence (`public.reminder_pause_state`) synchronized across all your devices in real-time.
+
+4. **Multi-Device Realtime Cloud Sync**:
+   - Powered by Supabase PostgreSQL and Realtime Broadcast channels (`user_sync_<userId>`).
+   - Changes on Web instantly propagate to Android and Windows Desktop without reloading.
+
+5. **Dynamic Statistics & Streak Engine**:
+   - Account-lifetime temporal boundaries (no fake historical days).
+   - Daily rate, weekly rate, current/best streaks, 7-day trend chart, and finalized daily history.
+
+6. **Offline-First Resilience**:
+   - Full local cache and offline event queues. Reminders completed while offline automatically flush to Supabase upon reconnection.
+
+---
+
+## 🏗️ Architecture Overview
 
 ```
-                   EyeFlow-Setup-1.0.0.exe
-                              │
-                      (User Installation)
-                              │
-                              ▼
-                %LOCALAPPDATA%\Programs\EyeFlow\
-                              │
-                              ▼
-                         EyeFlow.exe
-                              │
-           ┌──────────────────┴──────────────────┐
-           ▼                                     ▼
-   Main Dashboard UI                    Background Daemon Engine
-   (React + TypeScript)                     (desktop/main.cjs)
-           │                                     │
-   • Config & Schedules                 • Continuous Timestamp Scheduler
-   • Activity Log & History             • System Tray Controller & Menu
-   • Minimize to Tray on Close          • Windows Toast Notifications
-                                        • Native Modal Overlay Window
-                                                 │
-                               ┌─────────────────┴─────────────────┐
-                               ▼                                   ▼
-                        Water Reminder                  Look Outside Screen Break
-                               │                                   │
-                               └─────────────────┬─────────────────┘
-                                                 ▼
-                                     Dedicated Modal Window
-                                  (Auto-dismiss & Input Release)
+                      Supabase Cloud Backend
+              (Auth • PostgreSQL RLS • Realtime • Storage)
+                                │
+               ┌────────────────┼────────────────┐
+               ▼                ▼                ▼
+          Web Browser    Android Mobile   Windows Desktop
+         (React / PWA)    (Capacitor)     (Electron App)
+               │                │                │
+               └────────────────┼────────────────┘
+                                ▼
+                       authoritative engine
+                   (src/engine/reminderEngine.ts)
+                                │
+                  ┌─────────────┴─────────────┐
+                  ▼                           ▼
+            Water Reminder              Look Outside
+             (Hydration)               (Screen Break)
 ```
 
-1. **Autonomous Background Scheduler**:
-   - Executes 24/7 in the native Electron main process (`desktop/main.cjs`).
-   - Maintains schedule integrity and timer calculations even when the main dashboard is minimized or closed.
-2. **System Tray Integration**:
-   - Closes (`X`) send the main window to the Windows System Tray.
-   - Context menu provides instant access to open the dashboard, trigger manual reminders, pause reminders (30m, 1h, today), or quit cleanly.
-3. **Dedicated Reminder Overlays & Dual-Timer Support**:
-   - When scheduled times arrive, only the dedicated reminder modal appears on top of other applications.
-   - When both water and screen break reminders occur at the same time, both countdowns are unified into a single window.
-   - Timers are authoritative native countdowns: at `00:00`, the overlay immediately disappears and restores normal desktop mouse and keyboard interactions.
-4. **Offline Persistence**:
-   - Schedules, break logs, and hydration metrics are persisted locally in IndexedDB and `%APPDATA%\eyeflow`.
+---
+
+## 🚀 Quick Start & Development
+
+### 1. Prerequisites
+- **Node.js** (v18 or higher)
+- **npm** (v9 or higher)
+- **Android Studio / SDK** *(optional, for Android APK builds)*
+
+### 2. Setup Environment
+Copy the template configuration and supply your Supabase credentials:
+```bash
+cp .env.example .env
+```
+
+### 3. Install Dependencies
+```bash
+npm install
+```
+
+### 4. Run Development Server
+```bash
+# Web development server
+npm run dev
+
+# Windows desktop development mode
+npm run desktop:dev
+```
 
 ---
 
-## 🚀 Installation & Uninstallation Guide (Beta Testers)
-
-### Installation:
-1. Download or copy `EyeFlow-Setup-1.0.0.exe` to the target Windows computer.
-2. Double-click `EyeFlow-Setup-1.0.0.exe`.
-3. Follow the setup wizard (installs to `%LOCALAPPDATA%\Programs\EyeFlow` without requiring administrative elevation).
-4. Launch EyeFlow from the Desktop shortcut, Start Menu, or the installer finish screen.
-
-### Running Portably:
-1. Download and extract `EyeFlow-1.0.0-win-x64-portable.zip`.
-2. Double-click `EyeFlow.exe` in the extracted folder.
-
-### Uninstallation:
-1. Open **Windows Settings > Apps > Installed Apps** (or Control Panel > Programs and Features).
-2. Locate **EyeFlow Digital Wellness**.
-3. Click **Uninstall** (or run `%LOCALAPPDATA%\Programs\EyeFlow\Uninstall EyeFlow.exe`).
-
----
-
-## 🛠️ Build & Packaging Reproduction
-
-To reproduce the complete production build from source:
-
-### Prerequisites:
-- Windows 10 / 11 (64-bit)
-- Node.js (v18+) and npm
-
-### Build Commands:
+## 🛠️ Production Build Commands
 
 ```bash
-# 1. Install project dependencies
-npm install
-
-# 2. Build the React web application bundle
+# 1. Compile production web bundle
 npm run build
 
-# 3. Package and build all distribution artifacts (NSIS Installer + Portable ZIP)
-npm run dist:all
+# 2. Package Windows Desktop application (.exe)
+npm run package:win
 
-# Alternative target-specific commands:
-npm run dist:win       # Builds NSIS installer only
-npm run package:win    # Unpacked directory build (dist-electron/win-unpacked)
+# 3. Compile Android Release APK
+npm run android:build
+
+# 4. Run code linter
+npm run lint
 ```
-
-The resulting distribution files will be placed directly in the `release/` folder with verified SHA256 checksums.
 
 ---
 
-## 📋 System Requirements
-- **Operating System**: Windows 10 / Windows 11 (64-bit)
-- **User Privileges**: Standard user (No Administrator privileges required)
-- **Runtime Dependencies**: Zero external dependencies (Embedded Electron runtime)
-- **Network**: Fully offline capable
+## 🗄️ Database Setup
+
+All database tables, Row Level Security (RLS) policies, triggers, indexes, and storage buckets are consolidated into:
+[`supabase/migrations/00001_initial_schema.sql`](file:///d:/Gowtham%20Project's/Reminder%20App/supabase/migrations/00001_initial_schema.sql)
+
+To apply to your Supabase project:
+1. Open your **Supabase Dashboard** -> **SQL Editor**.
+2. Paste the contents of `00001_initial_schema.sql` and run it.
+
+---
+
+## 🔒 Security & Privacy
+- **Row Level Security (RLS)** enabled on 100% of tables (`auth.uid() = user_id`).
+- Zero telemetry tracking, zero analytics scripts.
+- Secure token storage with scoped device caching.
+
+---
+
+## 📄 License
+MIT License. Developed with care by the PauseFlow Team.

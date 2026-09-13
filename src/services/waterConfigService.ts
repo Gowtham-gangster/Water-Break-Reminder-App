@@ -1,5 +1,5 @@
 // src/services/waterConfigService.ts
-// EyeFlow V2 — Official Supabase Water Configuration Service
+// PauseFlow V2 — Official Supabase Water Configuration Service
 
 import { supabase } from './supabaseClient.ts';
 import { storageEngine } from '../engine/storageEngine.ts';
@@ -11,7 +11,7 @@ export class WaterConfigService {
    * Returns user-scoped local storage key for water configuration
    */
   public getScopedWaterKey(userId: string): string {
-    return `eyeflow:v2:${userId}:water`;
+    return `pauseflow:v2:${userId}:water`;
   }
 
   /**

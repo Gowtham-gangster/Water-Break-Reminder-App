@@ -4,37 +4,46 @@ import { detectPlatform } from './systemLifecycle';
 import { androidScheduler } from './androidScheduler';
 
 class WindowsBackgroundScheduler implements IBackgroundSchedulerService {
+  private getNative() {
+    return (window as any).pauseflowNative || (window as any).eyeflowNative;
+  }
+
   async scheduleLocalNotifications(): Promise<void> {
     // Windows Electron background daemon manages native setTimeout / scheduler loops natively
   }
 
   async syncUserSchedule(userId: string, notifications: ScheduledNotification[]): Promise<void> {
-    if ((window as any).eyeflowNative?.syncUserSchedule) {
-      await (window as any).eyeflowNative.syncUserSchedule(userId, notifications);
+    const native = this.getNative();
+    if (native?.syncUserSchedule) {
+      await native.syncUserSchedule(userId, notifications);
     }
   }
 
   async cancelUserSchedule(userId: string): Promise<void> {
-    if ((window as any).eyeflowNative?.cancelUserSchedule) {
-      await (window as any).eyeflowNative.cancelUserSchedule(userId);
+    const native = this.getNative();
+    if (native?.cancelUserSchedule) {
+      await native.cancelUserSchedule(userId);
     }
   }
 
   async cancelAllNotifications(): Promise<void> {
-    if ((window as any).eyeflowNative?.cancelAllReminders) {
-      await (window as any).eyeflowNative.cancelAllReminders();
+    const native = this.getNative();
+    if (native?.cancelAllReminders) {
+      await native.cancelAllReminders();
     }
   }
 
   async pause(minutes: number | 'tomorrow'): Promise<void> {
-    if ((window as any).eyeflowNative?.pauseReminders) {
-      await (window as any).eyeflowNative.pauseReminders(typeof minutes === 'number' ? minutes : 1440);
+    const native = this.getNative();
+    if (native?.pauseReminders) {
+      await native.pauseReminders(typeof minutes === 'number' ? minutes : 1440);
     }
   }
 
   async resume(): Promise<void> {
-    if ((window as any).eyeflowNative?.resumeReminders) {
-      await (window as any).eyeflowNative.resumeReminders();
+    const native = this.getNative();
+    if (native?.resumeReminders) {
+      await native.resumeReminders();
     }
   }
 }
@@ -56,12 +65,12 @@ class AndroidBackgroundScheduler implements IBackgroundSchedulerService {
     await androidScheduler.cancelAllReminders();
   }
 
-  async pause(): Promise<void> {
-    await this.cancelAllNotifications();
+  async pause(_minutes?: number | 'tomorrow'): Promise<void> {
+    await androidScheduler.pause();
   }
 
   async resume(): Promise<void> {
-    // Handled by recalculating and re-scheduling upcoming slots
+    await androidScheduler.resume();
   }
 }
 

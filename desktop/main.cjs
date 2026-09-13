@@ -20,10 +20,39 @@ process.on('unhandledRejection', (reason) => {
   console.error('[PauseFlow UnhandledRejection]', reason);
 });
 
+// Ensure explicit, consistent application identity and durable storage partition
+app.name = 'PauseFlow';
+try {
+  app.setAppUserModelId('com.pauseflow.desktop');
+  const appData = app.getPath('appData');
+  const oldUserData = path.join(appData, 'EyeFlow');
+  const newUserData = path.join(appData, 'PauseFlow');
+
+  // Migrate existing data from %APPDATA%\EyeFlow if %APPDATA%\PauseFlow does not exist
+  if (fs.existsSync(oldUserData) && !fs.existsSync(newUserData)) {
+    try {
+      fs.cpSync(oldUserData, newUserData, { recursive: true });
+      console.log('[PauseFlow] Migrated user data directory from EyeFlow to PauseFlow successfully.');
+    } catch (migErr) {
+      console.error('[PauseFlow] Migration warning:', migErr);
+    }
+  }
+
+  app.setPath('userData', newUserData);
+} catch (_) {}
+
 // Paths resolution
 const userDataPath = app.getPath('userData');
-const configFilePath = path.join(userDataPath, 'eyeflow_desktop_config.json');
-const logFilePath = path.join(userDataPath, 'eyeflow_startup.log');
+const configFilePath = path.join(userDataPath, 'pauseflow_desktop_config.json');
+const logFilePath = path.join(userDataPath, 'pauseflow_startup.log');
+
+// Migrate legacy config file if old one exists in directory
+try {
+  const legacyConfigFile = path.join(userDataPath, 'eyeflow_desktop_config.json');
+  if (fs.existsSync(legacyConfigFile) && !fs.existsSync(configFilePath)) {
+    fs.copyFileSync(legacyConfigFile, configFilePath);
+  }
+} catch (_) {}
 
 function logToFile(...args) {
   const line = `[${new Date().toISOString()}] ${args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ')}\n`;
@@ -194,19 +223,19 @@ function getActiveDisplayBounds() {
 const rendererPath = getRendererPath();
 const preloadPath = getPreloadPath();
 
-console.log('[EyeFlow] Application starting...');
-console.log('[EyeFlow] Packaged:', app.isPackaged);
-console.log('[EyeFlow] App path:', app.getAppPath());
-console.log('[EyeFlow] Resources path:', process.resourcesPath);
-console.log('[EyeFlow] __dirname:', __dirname);
-console.log('[EyeFlow] Renderer:', rendererPath);
-console.log('[EyeFlow] Renderer exists:', fs.existsSync(rendererPath));
-console.log('[EyeFlow] Preload:', preloadPath);
-console.log('[EyeFlow] Preload exists:', fs.existsSync(preloadPath));
+console.log('[PauseFlow] Application starting...');
+console.log('[PauseFlow] Packaged:', app.isPackaged);
+console.log('[PauseFlow] App path:', app.getAppPath());
+console.log('[PauseFlow] Resources path:', process.resourcesPath);
+console.log('[PauseFlow] __dirname:', __dirname);
+console.log('[PauseFlow] Renderer:', rendererPath);
+console.log('[PauseFlow] Renderer exists:', fs.existsSync(rendererPath));
+console.log('[PauseFlow] Preload:', preloadPath);
+console.log('[PauseFlow] Preload exists:', fs.existsSync(preloadPath));
 
 if (process.argv.includes('--diagnostic') || process.argv.includes('-d')) {
   console.log('====================================');
-  console.log('   EyeFlow Diagnostic State Log     ');
+  console.log('   PauseFlow Diagnostic State Log   ');
   console.log('====================================');
   console.log('Config File:', configFilePath);
   console.log('Config State:', JSON.stringify(configStore.config, null, 2));
@@ -808,6 +837,9 @@ function updateTrayMenu(nextWater, nextScreen, isPaused) {
         }
         configStore.save(configStore.config);
         scheduler.reschedule();
+        if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+          mainWindow.webContents.send('onNativePauseStateChange', configStore.config.pauseState);
+        }
       },
     },
     { type: 'separator' },
@@ -1071,14 +1103,14 @@ function setupIpcHandlers() {
 // ========================================================
 // Single instance lock
 const gotTheLock = app.requestSingleInstanceLock();
-logToFile('[EyeFlow] Single instance lock acquired:', gotTheLock);
+logToFile('[PauseFlow] Single instance lock acquired:', gotTheLock);
 
 if (!gotTheLock) {
-  logToFile('[EyeFlow] Another instance is already running. Quitting duplicate.');
+  logToFile('[PauseFlow] Another instance is already running. Quitting duplicate.');
   app.quit();
 } else {
   app.on('second-instance', () => {
-    logToFile('[EyeFlow] Second instance detected. Restoring/focusing main window.');
+    logToFile('[PauseFlow] Second instance detected. Restoring/focusing main window.');
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
@@ -1092,17 +1124,17 @@ if (!gotTheLock) {
     // 1. Explicitly remove the default Electron File/Edit/View/Window menu globally
     Menu.setApplicationMenu(null);
 
-    logToFile('[EyeFlow] Application initialized');
-    logToFile('[EyeFlow] Electron application menu disabled (Menu.setApplicationMenu(null))');
-    logToFile('[EyeFlow] Clearing transient reminder state');
-    logToFile('[EyeFlow] Recalculating schedule from Date.now()');
+    logToFile('[PauseFlow] Application initialized');
+    logToFile('[PauseFlow] Electron application menu disabled (Menu.setApplicationMenu(null))');
+    logToFile('[PauseFlow] Clearing transient reminder state');
+    logToFile('[PauseFlow] Recalculating schedule from Date.now()');
 
     createMainWindow();
     createSystemTray();
     setupIpcHandlers();
     scheduler.reschedule();
-    logToFile('[EyeFlow] Scheduler initialized');
-    logToFile('[EyeFlow] Ready');
+    logToFile('[PauseFlow] Scheduler initialized');
+    logToFile('[PauseFlow] Ready');
 
     // Sleep/Wake listener
     powerMonitor.on('resume', () => {
@@ -1116,12 +1148,12 @@ if (!gotTheLock) {
   });
 
   app.on('before-quit', () => {
-    logToFile('[EyeFlow] App preparing to quit (before-quit)');
+    logToFile('[PauseFlow] App preparing to quit (before-quit)');
     app.isQuitting = true;
   });
 
   app.on('will-quit', () => {
-    logToFile('[EyeFlow] App will quit. Cleaning up system tray and timers.');
+    logToFile('[PauseFlow] App will quit. Cleaning up system tray and timers.');
     if (tray) {
       try {
         tray.destroy();
@@ -1133,7 +1165,7 @@ if (!gotTheLock) {
   app.on('window-all-closed', () => {
     // Keep background daemon alive in system tray on Windows unless quitting
     if (!app.isQuitting) {
-      logToFile('[EyeFlow] All windows closed. Background daemon remaining in system tray.');
+      logToFile('[PauseFlow] All windows closed. Background daemon remaining in system tray.');
     }
   });
 }

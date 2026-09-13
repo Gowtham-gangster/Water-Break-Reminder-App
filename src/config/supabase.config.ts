@@ -1,5 +1,5 @@
 // src/config/supabase.config.ts
-// EyeFlow V2 — Supabase Environment & Default Configuration Constants
+// PauseFlow V2 — Supabase Environment & Default Configuration Constants
 
 export interface SupabaseConfig {
   url: string;

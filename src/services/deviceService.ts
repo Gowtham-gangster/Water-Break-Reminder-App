@@ -1,11 +1,12 @@
 // src/services/deviceService.ts
-// EyeFlow V2 — Supabase Device Registration, Identification & Sync Service
+// PauseFlow V2 — Supabase Device Registration, Identification & Sync Service
 
 import { supabase } from './supabaseClient.ts';
 import type { DeviceRegistrationEntity } from '../types/index.ts';
 
 export class DeviceService {
-  private static DEVICE_ID_KEY = 'eyeflow:device_id';
+  private static DEVICE_ID_KEY = 'pauseflow:device_id';
+  private static LEGACY_DEVICE_ID_KEY = 'eyeflow:device_id';
 
   /**
    * Generates or retrieves a persistent RFC4122 v4 unique identifier for this client device
@@ -14,6 +15,12 @@ export class DeviceService {
     if (typeof window === 'undefined') return 'server_device';
     try {
       let id = localStorage.getItem(DeviceService.DEVICE_ID_KEY);
+      if (!id) {
+        id = localStorage.getItem(DeviceService.LEGACY_DEVICE_ID_KEY);
+        if (id) {
+          localStorage.setItem(DeviceService.DEVICE_ID_KEY, id);
+        }
+      }
       if (!id) {
         if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
           id = crypto.randomUUID();
@@ -35,8 +42,9 @@ export class DeviceService {
     if (typeof window === 'undefined') return 'web';
 
     // 1. Electron Desktop Environment
-    if ((window as any).eyeflowNative?.isDesktop) {
-      const p = (window as any).eyeflowNative?.platform || '';
+    const desktopBridge = (window as any).pauseflowNative || (window as any).eyeflowNative;
+    if (desktopBridge?.isDesktop) {
+      const p = desktopBridge?.platform || '';
       if (p === 'win32' || p === 'windows') return 'windows';
       if (p === 'darwin') return 'macos';
       if (p === 'linux') return 'linux';

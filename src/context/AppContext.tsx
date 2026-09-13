@@ -18,19 +18,26 @@ import { notificationEngine } from '../engine/notificationEngine';
 import { APP_CONFIG } from '../config/app.config';
 import { detectPlatform } from '../platform/systemLifecycle';
 import { backgroundScheduler } from '../platform/backgroundScheduler';
+import { androidScheduler, PauseFlowNative } from '../platform/androidScheduler';
 import type { ScheduledNotification } from '../platform/types';
 import { LocalNotifications } from '@capacitor/local-notifications';
 
 import { authService, type UserProfile } from '../services/authService';
 import { settingsService } from '../services/settingsService';
-import { reminderService } from '../services/reminderService';
+import { reminderService, getLocalDateString } from '../services/reminderService';
 import { waterConfigService } from '../services/waterConfigService';
 import { lookOutsideConfigService } from '../services/lookOutsideConfigService';
 import { profileService } from '../services/profileService';
 import { profileAvatarService } from '../services/profileAvatarService';
 import { realtimeSyncService } from '../services/realtimeSyncService';
 import { syncService } from '../services/syncService';
+import { pauseService } from '../services/pauseService.ts';
 import { performanceDiagnostics } from '../services/performanceDiagnostics';
+
+const getDesktopBridge = () =>
+  typeof window !== 'undefined'
+    ? ((window as any).pauseflowNative || (window as any).eyeflowNative)
+    : undefined;
 
 function getTodayString(now: Date = new Date()): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
@@ -79,8 +86,8 @@ interface AppContextType {
   onboardingCompleted: boolean;
   completeOnboarding: () => Promise<void>;
 
-  activeTab: 'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'showcase' | 'profile';
-  setActiveTab: (tab: 'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'showcase' | 'profile') => void;
+  activeTab: 'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'profile';
+  setActiveTab: (tab: 'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'profile') => void;
 
   // Active Reminder State (Explicit distinction between REAL scheduled events and PREVIEW)
   realActiveReminder: RealReminderEvent | null;
@@ -91,8 +98,6 @@ interface AppContextType {
   activeWaterModalOpen: boolean;
   activePauseModalOpen: boolean;
   setActivePauseModalOpen: (open: boolean) => void;
-  activeAuthModalOpen: boolean;
-  setActiveAuthModalOpen: (open: boolean) => void;
 
   // Dedicated Entry Points
   startPreview: (category: 'water' | 'screen' | 'both', durationSec?: number) => void;
@@ -172,7 +177,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(true);
 
   const [activeTab, setActiveTab] = useState<
-    'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'showcase' | 'profile'
+    'dashboard' | 'water' | 'screenbreak' | 'statistics' | 'settings' | 'profile'
   >('dashboard');
 
   // Real-Time Dynamic Timestamp State (Drives continuous reactive recalculation on device clock)
@@ -181,11 +186,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Transient Runtime State (NEVER restored on process restart)
   const [realActiveReminder, setRealActiveReminder] = useState<RealReminderEvent | null>(null);
   const [previewReminder, setPreviewReminder] = useState<PreviewReminderEvent | null>(null);
-
+  // Modals Visibility State
   const [activeBreakModalOpen, setActiveBreakModalOpen] = useState(false);
   const [activeWaterModalOpen, setActiveWaterModalOpen] = useState(false);
   const [activePauseModalOpen, setActivePauseModalOpen] = useState(false);
-  const [activeAuthModalOpen, setActiveAuthModalOpen] = useState(false);
 
   // References for zero-polling sleep timers (Web mode only)
   const waterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -195,12 +199,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const loadUserScopedData = async (user: UserProfile) => {
     const userId = user.id;
     const cacheStart = performance.now();
+
+    // 0. Reconcile any native delivered reminders from when app was killed/backgrounded
+    const initialTz = user.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata';
+    try {
+      await androidScheduler.reconcileDeliveredReminders(userId, user.created_at, initialTz);
+    } catch (rErr) {
+      console.warn('[AppContext] Startup native reconciliation warning:', rErr);
+    }
+
     // 1. Instant local cache load
     const wConfig = await storageEngine.loadWaterConfig(userId);
     const sConfig = await storageEngine.loadScreenBreakConfig(userId);
     const gSettings = await storageEngine.loadGeneralSettings(userId);
     const nSettings = await storageEngine.loadNotificationSettings(userId);
-    const pState = await storageEngine.loadPauseState(userId);
+    const pStateRaw = await pauseService.getPauseState(userId);
+    const pState = pauseService.mapToPauseState(pStateRaw, Date.now());
     const isOnboarded = await storageEngine.getOnboardingStatus(userId);
 
     // Use profile timezone if general settings timezone not set
@@ -218,12 +232,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const todayEvents = await reminderService.getTodayEvents(userId, userTz);
       for (const ev of todayEvents) {
         if (ev.status === 'completed') {
-          const evDate = new Date(ev.completed_at || ev.scheduled_at || ev.created_at || Date.now());
-          const timeStr = `${String(evDate.getHours()).padStart(2, '0')}:${String(evDate.getMinutes()).padStart(2, '0')}`;
+          const evDate = new Date(ev.scheduled_at || ev.completed_at || ev.created_at || Date.now());
+          const dateStr = getLocalDateString(evDate, userTz);
+          
+          let timeStr = '';
+          try {
+            const timeFormatter = new Intl.DateTimeFormat('en-US', {
+              timeZone: userTz,
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false,
+            });
+            const parts = timeFormatter.formatToParts(evDate);
+            const hour = parts.find((p) => p.type === 'hour')?.value || '00';
+            const minute = parts.find((p) => p.type === 'minute')?.value || '00';
+            timeStr = `${hour}:${minute}`;
+          } catch (_) {
+            timeStr = `${String(evDate.getHours()).padStart(2, '0')}:${String(evDate.getMinutes()).padStart(2, '0')}`;
+          }
+
           if (ev.type === 'water') {
-            if (!todayWaterLogs.some((l) => l.id === ev.id)) {
+            const slotId = reminderEngine.generateSlotId('water', dateStr, timeStr);
+            if (!todayWaterLogs.some((l) => l.id === slotId || l.id === ev.id || l.time === timeStr)) {
               todayWaterLogs.push({
-                id: ev.id,
+                id: slotId,
                 time: timeStr,
                 scheduledTimestamp: evDate.getTime(),
                 status: 'completed',
@@ -231,9 +263,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               });
             }
           } else if (ev.type === 'look_outside' || (ev.type as any) === 'screen') {
-            if (!todayScreenLogs.some((l) => l.id === ev.id)) {
+            const slotId = reminderEngine.generateSlotId('screen', dateStr, timeStr);
+            if (!todayScreenLogs.some((l) => l.id === slotId || l.id === ev.id || l.time === timeStr)) {
               todayScreenLogs.push({
-                id: ev.id,
+                id: slotId,
                 time: timeStr,
                 scheduledTimestamp: evDate.getTime(),
                 durationMinutes: sConfig.breakDurationMinutes || 5,
@@ -244,6 +277,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
       }
+      console.log(`[PauseFlow][TRACE] stage=PROGRESS_CALCULATED waterCompleted=${todayWaterLogs.length} screenCompleted=${todayScreenLogs.length}`);
     } catch (err) {
       console.warn('[AppContext] Could not restore today events from reminderService:', err);
     }
@@ -263,7 +297,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: user.id,
       name: user.display_name,
       email: user.email,
-      token: (authService as any).apiClient?.getToken?.() || '',
       isLoggedIn: true,
       lastSyncedAt: new Date().toLocaleTimeString(),
     });
@@ -290,8 +323,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             };
             setWaterConfigState(mappedWater);
             await storageEngine.saveWaterConfig(mappedWater, userId);
-            if ((window as any).eyeflowNative?.updateWaterConfig) {
-              await (window as any).eyeflowNative.updateWaterConfig(mappedWater);
+            const desktopBridge = getDesktopBridge();
+            if (desktopBridge?.updateWaterConfig) {
+              await desktopBridge.updateWaterConfig(mappedWater);
             }
           } else if (wConfig) {
             // Upload local Water config to cloud as initial source of truth
@@ -319,8 +353,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             };
             setScreenBreakConfigState(mappedScreen);
             await storageEngine.saveScreenBreakConfig(mappedScreen, userId);
-            if ((window as any).eyeflowNative?.updateScreenConfig) {
-              await (window as any).eyeflowNative.updateScreenConfig(mappedScreen);
+            const desktopBridge = getDesktopBridge();
+            if (desktopBridge?.updateScreenConfig) {
+              await desktopBridge.updateScreenConfig(mappedScreen);
             }
           } else if (sConfig) {
             // Upload local Look Outside config to cloud as initial source of truth
@@ -397,11 +432,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               },
               userId
             );
-          } else if (user) {
-            await profileService.updateProfile(userId, {
-              display_name: user.display_name,
-              timezone: gSettings.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-            });
+          }
+
+          // Reconcile Pause State from Cloud
+          if (syncResult.pauseState) {
+            const mappedPause = pauseService.mapToPauseState(syncResult.pauseState, Date.now());
+            setPauseState(mappedPause);
+            await storageEngine.savePauseState(mappedPause, userId);
+            if (mappedPause.isPaused) {
+              backgroundScheduler.pause(mappedPause.pauseMinutes || 1440);
+            } else {
+              backgroundScheduler.resume();
+            }
           }
         }
       } catch (e) {
@@ -422,8 +464,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       realtimeSyncService.unsubscribe();
       await backgroundScheduler.cancelAllNotifications();
-      if ((window as any).eyeflowNative?.resumeReminders) {
-        await (window as any).eyeflowNative.resumeReminders();
+      const desktopBridge = getDesktopBridge();
+      if (desktopBridge?.resumeReminders) {
+        await desktopBridge.resumeReminders();
       }
     } catch (e) {
       console.warn('[Logout] Error cancelling local notifications:', e);
@@ -440,7 +483,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveBreakModalOpen(false);
     setActiveWaterModalOpen(false);
     setActivePauseModalOpen(false);
-    setActiveAuthModalOpen(false);
     setWaterLogs([]);
     setScreenLogs([]);
 
@@ -448,7 +490,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const currentUserId = currentUser?.id;
     if (currentUserId) {
       await storageEngine.clearUserData(currentUserId);
+      reminderService.clearUserCache(currentUserId);
     }
+    reminderService.clearAllMemoryCache();
     setWaterConfigState(APP_CONFIG.defaultWaterConfig);
     setScreenBreakConfigState(APP_CONFIG.defaultScreenBreakConfig);
     setGeneralSettingsState({
@@ -492,7 +536,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // 1. Reactive Real-Time Device Clock Pulse & Sleep/Wake Detection + App Resume Cloud Sync
   useEffect(() => {
     const handleTimeSync = () => {
-      setCurrentDeviceTimestamp(Date.now());
+      const now = Date.now();
+      setCurrentDeviceTimestamp(now);
+
+      // Check if pause duration has expired
+      setPauseState((prev) => {
+        if (prev.isPaused && prev.pauseUntil) {
+          const untilMs = new Date(prev.pauseUntil).getTime();
+          if (!isNaN(untilMs) && now >= untilMs) {
+            console.log('[AppContext] Pause duration elapsed. Automatically resuming reminders...');
+            const cleared: PauseState = { isPaused: false, pauseUntil: null, pauseMinutes: null, userId: prev.userId };
+            if (prev.userId) {
+              storageEngine.savePauseState(cleared, prev.userId);
+              pauseService.resume(prev.userId);
+            }
+            backgroundScheduler.resume();
+            const desktopBridge = getDesktopBridge();
+            if (desktopBridge?.resumeReminders) {
+              desktopBridge.resumeReminders();
+            }
+            return cleared;
+          }
+        }
+        return prev;
+      });
     };
 
     const handleAppResumeSync = async () => {
@@ -564,25 +631,72 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [currentUser?.id]);
 
-  // 2. Session verification on boot
+  // 2. Session verification on boot & reactive auth state listener
   useEffect(() => {
+    let isMounted = true;
+
     async function initSession() {
       try {
         const { user } = await authService.restoreSession();
+        if (!isMounted) return;
         if (user) {
           await loginUser(user);
         } else {
           setAuthState('unauthenticated');
         }
       } catch (err) {
-        console.warn('[AppContext] Session verification error:', err);
-        setAuthState('unauthenticated');
+        console.warn('[AppContext] Session verification non-fatal error:', err);
+        if (isMounted) {
+          // Check local storage one more time before defaulting to unauthenticated
+          const fallback = authService.getLocalPersistedSession();
+          if (fallback && fallback.user) {
+            const fallbackUser = authService.toUserProfile(fallback.user);
+            await loginUser(fallbackUser);
+          } else {
+            setAuthState('unauthenticated');
+          }
+        }
       } finally {
         notificationEngine.requestPermission();
       }
     }
 
     initSession();
+
+    // Reactive Supabase Auth state change listener
+    const { data: authListener } = authService.onAuthStateChange(async (event, session) => {
+      console.log(`[AppContext] Supabase Auth event: ${event}`);
+      if (!isMounted) return;
+
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        if (session && session.user) {
+          const userProfile = authService.toUserProfile(session.user);
+          setCurrentUser((prev) => {
+            if (!prev || prev.id !== userProfile.id) {
+              loginUser(userProfile);
+              return userProfile;
+            }
+            return {
+              ...prev,
+              display_name: userProfile.display_name || prev.display_name,
+              email: userProfile.email || prev.email,
+            };
+          });
+          setAuthState('authenticated');
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setCurrentUser(null);
+        setUserAccountState({ isLoggedIn: false });
+        setAuthState('unauthenticated');
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      if (authListener && authListener.subscription) {
+        authListener.subscription.unsubscribe();
+      }
+    };
   }, []);
 
   // 3. Network Reconnect Listener: Automatically flush offline events and sync
@@ -609,13 +723,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // 4. Listen to Native Background Daemon Status Updates (Desktop Electron Environment)
   useEffect(() => {
-    if (typeof window === 'undefined' || !(window as any).eyeflowNative?.isDesktop) return;
+    const desktopBridge = getDesktopBridge();
+    if (typeof window === 'undefined' || !desktopBridge?.isDesktop) return;
 
-    const cleanupStatus = (window as any).eyeflowNative.onStatusUpdated?.(() => {
+    const cleanupStatus = desktopBridge.onStatusUpdated?.(() => {
       setCurrentDeviceTimestamp(Date.now());
     });
 
-    const cleanupTriggered = (window as any).eyeflowNative.onReminderTriggered?.(
+    const cleanupTriggered = desktopBridge.onReminderTriggered?.(
       async (data: { type: 'water' | 'screen' | 'look_outside'; slotId: string; scheduledAt?: string }) => {
         console.log('[AppContext] Native reminder triggered received:', data);
         const cat = data.type === 'screen' ? 'look_outside' : data.type;
@@ -626,7 +741,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     );
 
-    const cleanupCompleted = (window as any).eyeflowNative.onNativeReminderCompleted?.(
+    const cleanupCompleted = desktopBridge.onNativeReminderCompleted?.(
       async (data: { type: 'water' | 'screen' | 'look_outside'; slotId: string; completedAt?: string }) => {
         console.log('[AppContext] Native reminder completion received:', data);
         const cat = data.type === 'look_outside' ? 'screen' : data.type;
@@ -634,11 +749,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     );
 
-    const cleanupExpired = (window as any).eyeflowNative.onNativeReminderExpired?.(
+    const cleanupExpired = desktopBridge.onNativeReminderExpired?.(
       async (data: { type: 'water' | 'screen' | 'look_outside'; slotId: string; expiredAt?: string }) => {
         console.log('[AppContext] Native reminder expiration received:', data);
         const cat = data.type === 'look_outside' ? 'screen' : data.type;
         await skipRealReminder(cat, data.slotId);
+      }
+    );
+
+    const cleanupNativePause = (desktopBridge as any).onNativePauseStateChange?.(
+      async (state: { isPaused: boolean; pauseMinutes: number | null }) => {
+        console.log('[AppContext] Native pause state change from system tray:', state);
+        if (state.isPaused && state.pauseMinutes) {
+          await setPauseDuration(state.pauseMinutes);
+        } else {
+          await setPauseDuration(null);
+        }
       }
     );
 
@@ -647,6 +773,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (cleanupTriggered) cleanupTriggered();
       if (cleanupCompleted) cleanupCompleted();
       if (cleanupExpired) cleanupExpired();
+      if (cleanupNativePause) cleanupNativePause();
     };
   }, [currentUser]);
 
@@ -743,8 +870,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             };
             setWaterConfigState(mappedWater);
             await storageEngine.saveWaterConfig(mappedWater, userId);
-            if ((window as any).eyeflowNative?.updateWaterConfig) {
-              await (window as any).eyeflowNative.updateWaterConfig(mappedWater);
+            const desktopBridge = getDesktopBridge();
+            if (desktopBridge?.updateWaterConfig) {
+              await desktopBridge.updateWaterConfig(mappedWater);
             }
           }
         } catch (err) {
@@ -773,8 +901,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             };
             setScreenBreakConfigState(mappedScreen);
             await storageEngine.saveScreenBreakConfig(mappedScreen, userId);
-            if ((window as any).eyeflowNative?.updateScreenConfig) {
-              await (window as any).eyeflowNative.updateScreenConfig(mappedScreen);
+            const desktopBridge = getDesktopBridge();
+            if (desktopBridge?.updateScreenConfig) {
+              await desktopBridge.updateScreenConfig(mappedScreen);
             }
           }
         } catch (err) {
@@ -943,6 +1072,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
+    // 7. Remote Pause state update from another device (Android, Web, Windows)
+    const unsubPause = realtimeSyncService.onPauseStateChange(async (payload) => {
+      if (payload.new && (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE')) {
+        const incoming = payload.new;
+        if (incoming.user_id && incoming.user_id !== userId) return;
+
+        console.log(`[PauseFlow][Realtime][Pause] Remote pause update received from device = ${incoming.paused_by_device_id || 'unknown'}, paused_until = ${incoming.paused_until}, updated_at = ${incoming.updated_at}`);
+        const mapped = pauseService.mapToPauseState(incoming, Date.now());
+        setPauseState(mapped);
+        await storageEngine.savePauseState(mapped, userId);
+
+        const desktopBridge = getDesktopBridge();
+        if (mapped.isPaused) {
+          await backgroundScheduler.pause(mapped.pauseMinutes || 1440);
+          if (desktopBridge?.pauseReminders) {
+            await desktopBridge.pauseReminders(mapped.pauseMinutes || 1440);
+          }
+        } else {
+          await backgroundScheduler.resume();
+          if (desktopBridge?.resumeReminders) {
+            await desktopBridge.resumeReminders();
+          }
+        }
+      }
+    });
+
     return () => {
       unsubWater();
       unsubScreen();
@@ -950,6 +1105,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubEvents();
       unsubLocalEvents();
       unsubProfile();
+      unsubPause();
     };
   }, [currentUser?.id]);
 
@@ -967,8 +1123,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setWaterConfig = async (cfg: WaterConfig) => {
     setWaterConfigState(cfg);
     await storageEngine.saveWaterConfig(cfg, currentUser?.id);
-    if ((window as any).eyeflowNative?.updateWaterConfig) {
-      await (window as any).eyeflowNative.updateWaterConfig(cfg);
+    const desktopBridge = getDesktopBridge();
+    if (desktopBridge?.updateWaterConfig) {
+      await desktopBridge.updateWaterConfig(cfg);
     }
     if (currentUser?.id) {
       try {
@@ -996,8 +1153,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setScreenBreakConfig = async (cfg: ScreenBreakConfig) => {
     setScreenBreakConfigState(cfg);
     await storageEngine.saveScreenBreakConfig(cfg, currentUser?.id);
-    if ((window as any).eyeflowNative?.updateScreenConfig) {
-      await (window as any).eyeflowNative.updateScreenConfig(cfg);
+    const desktopBridge = getDesktopBridge();
+    if (desktopBridge?.updateScreenConfig) {
+      await desktopBridge.updateScreenConfig(cfg);
     }
     if (currentUser?.id) {
       try {
@@ -1060,131 +1218,147 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
 
   const setPauseDuration = async (minutes: number | 'tomorrow' | null) => {
+    const uid = currentUser?.id || 'default_user';
+
     if (minutes === null) {
-      const newState: PauseState = { isPaused: false, pauseUntil: null, pauseMinutes: null, userId: currentUser?.id };
+      const entity = await pauseService.resume(uid);
+      const newState: PauseState = pauseService.mapToPauseState(entity, Date.now());
       setPauseState(newState);
-      await storageEngine.savePauseState(newState, currentUser?.id);
-      if ((window as any).eyeflowNative?.resumeReminders) {
-        await (window as any).eyeflowNative.resumeReminders();
+      await backgroundScheduler.resume();
+      const desktopBridge = getDesktopBridge();
+      if (desktopBridge?.resumeReminders) {
+        await desktopBridge.resumeReminders();
       }
       return;
     }
 
-    const now = new Date();
-    let untilDate: Date;
-
-    if (minutes === 'tomorrow') {
-      untilDate = new Date();
-      untilDate.setDate(untilDate.getDate() + 1);
-      untilDate.setHours(8, 0, 0, 0);
-    } else {
-      untilDate = new Date(now.getTime() + minutes * 60 * 1000);
-    }
-
-    const newState: PauseState = {
-      isPaused: true,
-      pauseUntil: untilDate.toISOString(),
-      pauseMinutes: typeof minutes === 'number' ? minutes : 1440,
-      userId: currentUser?.id,
-    };
-
+    const entity = await pauseService.setPause(uid, minutes);
+    const newState: PauseState = pauseService.mapToPauseState(entity, Date.now());
     setPauseState(newState);
-    await storageEngine.savePauseState(newState, currentUser?.id);
-    if ((window as any).eyeflowNative?.pauseReminders) {
-      await (window as any).eyeflowNative.pauseReminders(typeof minutes === 'number' ? minutes : 1440);
+    await backgroundScheduler.pause(minutes);
+    const desktopBridge = getDesktopBridge();
+    if (desktopBridge?.pauseReminders) {
+      const durationMins = typeof minutes === 'number' ? minutes : 1440;
+      await desktopBridge.pauseReminders(durationMins);
     }
   };
 
   // REAL Reminder Status Update
-  const markWaterStatus = async (id: string, status: ReminderStatus) => {
+  const markWaterStatus = async (id: string, status: ReminderStatus, scheduledTimestamp?: number) => {
     const todayStr = getTodayString();
-    const timeMatch = id.match(/(\d{1,2}):(\d{2})/);
-    const slotTime = timeMatch
-      ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`
-      : id.replace('water-', '');
 
-    const existing = waterLogs.find((l) => l.id === id || l.time === slotTime);
-    let updated: WaterReminderLog[];
-
-    if (existing) {
-      updated = waterLogs.map((l) =>
-        l.id === id || l.time === slotTime
-          ? { ...l, id, time: slotTime, status, completedAt: new Date().toLocaleTimeString() }
-          : l
-      );
+    // Extract HH:mm from the end of the slot ID (e.g. 'water:2026-09-13:10:00' -> '10:00' or 'water-10:00' -> '10:00')
+    let slotTime = '';
+    const endMatch = id.match(/(\d{1,2}:\d{2})$/);
+    if (endMatch) {
+      const [h, m] = endMatch[1].split(':');
+      slotTime = `${h.padStart(2, '0')}:${m}`;
+    } else if (scheduledTimestamp) {
+      const d = new Date(scheduledTimestamp);
+      slotTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
     } else {
-      updated = [
-        ...waterLogs,
-        {
-          id,
-          time: slotTime,
-          scheduledTimestamp: Date.now(),
-          status,
-          completedAt: new Date().toLocaleTimeString(),
-        },
-      ];
+      const d = new Date();
+      slotTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
     }
 
-    setWaterLogs(updated);
-    await storageEngine.saveDailyWaterLogs(todayStr, updated, currentUser?.id);
+    setWaterLogs((prevLogs) => {
+      const existingIdx = prevLogs.findIndex((l) => l.id === id || l.time === slotTime);
+      let updated: WaterReminderLog[];
+
+      if (existingIdx >= 0) {
+        updated = [...prevLogs];
+        updated[existingIdx] = {
+          ...prevLogs[existingIdx],
+          id,
+          time: slotTime,
+          status,
+          completedAt: new Date().toLocaleTimeString(),
+        };
+      } else {
+        updated = [
+          ...prevLogs,
+          {
+            id,
+            time: slotTime,
+            scheduledTimestamp: scheduledTimestamp || Date.now(),
+            status,
+            completedAt: new Date().toLocaleTimeString(),
+          },
+        ];
+      }
+
+      storageEngine.saveDailyWaterLogs(todayStr, updated, currentUser?.id);
+      return updated;
+    });
+
+    console.log(`[PauseFlow][UI] progress_update type=water eventId=${id} slotTime=${slotTime} status=${status}`);
 
     // Record authoritative lifecycle event in reminderService
     try {
       const activeUserId = currentUser?.id || (await authService.getCurrentUser())?.id || '';
-      if (activeUserId) {
-        if (status === 'completed') {
-          await reminderService.recordCompleted(activeUserId, 'water', id, undefined, new Date().toISOString());
-        } else if (status === 'skipped' || status === 'missed') {
-          await reminderService.recordExpired(activeUserId, 'water', id);
-        }
+      if (activeUserId && status === 'completed') {
+        await reminderService.recordCompleted(activeUserId, 'water', id, undefined, new Date().toISOString());
       }
     } catch (err) {
       console.warn('[AppContext] Failed to record water event in reminderService:', err);
     }
   };
 
-  const markScreenStatus = async (id: string, status: ReminderStatus) => {
+  const markScreenStatus = async (id: string, status: ReminderStatus, scheduledTimestamp?: number) => {
     const todayStr = getTodayString();
-    const timeMatch = id.match(/(\d{1,2}):(\d{2})/);
-    const slotTime = timeMatch
-      ? `${timeMatch[1].padStart(2, '0')}:${timeMatch[2]}`
-      : id.replace('screen-', '');
 
-    const existing = screenLogs.find((l) => l.id === id || l.time === slotTime);
-    let updated: ScreenBreakLog[];
-
-    if (existing) {
-      updated = screenLogs.map((l) =>
-        l.id === id || l.time === slotTime
-          ? { ...l, id, time: slotTime, status, completedAt: new Date().toLocaleTimeString() }
-          : l
-      );
+    let slotTime = '';
+    const endMatch = id.match(/(\d{1,2}:\d{2})$/);
+    if (endMatch) {
+      const [h, m] = endMatch[1].split(':');
+      slotTime = `${h.padStart(2, '0')}:${m}`;
+    } else if (scheduledTimestamp) {
+      const d = new Date(scheduledTimestamp);
+      slotTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
     } else {
-      updated = [
-        ...screenLogs,
-        {
+      const d = new Date();
+      slotTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+
+    setScreenLogs((prevLogs) => {
+      const existingIdx = prevLogs.findIndex((l) => l.id === id || l.time === slotTime);
+      let updated: ScreenBreakLog[];
+
+      if (existingIdx >= 0) {
+        updated = [...prevLogs];
+        updated[existingIdx] = {
+          ...prevLogs[existingIdx],
           id,
           time: slotTime,
-          scheduledTimestamp: Date.now(),
           durationMinutes: screenBreakConfig.breakDurationMinutes || 5,
           status,
           completedAt: new Date().toLocaleTimeString(),
-        },
-      ];
-    }
+        };
+      } else {
+        updated = [
+          ...prevLogs,
+          {
+            id,
+            time: slotTime,
+            scheduledTimestamp: scheduledTimestamp || Date.now(),
+            durationMinutes: screenBreakConfig.breakDurationMinutes || 5,
+            status,
+            completedAt: new Date().toLocaleTimeString(),
+          },
+        ];
+      }
 
-    setScreenLogs(updated);
-    await storageEngine.saveDailyScreenLogs(todayStr, updated, currentUser?.id);
+      storageEngine.saveDailyScreenLogs(todayStr, updated, currentUser?.id);
+      return updated;
+    });
+
+    console.log(`[PauseFlow][UI] progress_update type=look_outside eventId=${id} slotTime=${slotTime} status=${status}`);
 
     // Record authoritative lifecycle event in reminderService
     try {
       const activeUserId = currentUser?.id || (await authService.getCurrentUser())?.id || '';
-      if (activeUserId) {
-        if (status === 'completed') {
-          await reminderService.recordCompleted(activeUserId, 'look_outside', id, undefined, new Date().toISOString());
-        } else if (status === 'skipped' || status === 'missed') {
-          await reminderService.recordExpired(activeUserId, 'look_outside', id);
-        }
+      if (activeUserId && status === 'completed') {
+        await reminderService.recordCompleted(activeUserId, 'look_outside', id, undefined, new Date().toISOString());
       }
     } catch (err) {
       console.warn('[AppContext] Failed to record screen break event in reminderService:', err);
@@ -1203,8 +1377,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         : (screenBreakConfig.breakDurationMinutes || 5) * 60;
 
     // In Desktop Electron mode, open the dedicated native reminder window!
-    if (typeof window !== 'undefined' && (window as any).eyeflowNative?.startPreview) {
-      (window as any).eyeflowNative.startPreview(category === 'both' ? 'water' : category, duration);
+    const desktopBridge = getDesktopBridge();
+    if (typeof window !== 'undefined' && desktopBridge?.startPreview) {
+      desktopBridge.startPreview(category === 'both' ? 'water' : category, duration);
       return;
     }
 
@@ -1321,32 +1496,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     setRealActiveReminder(null);
 
-    if ((window as any).eyeflowNative?.completeReminder) {
-      await (window as any).eyeflowNative.completeReminder(category === 'both' ? 'water' : category, slotId);
+    const desktopBridge = getDesktopBridge();
+    if (desktopBridge?.completeReminder) {
+      await desktopBridge.completeReminder(category === 'both' ? 'water' : category, slotId);
     }
   };
 
   const skipRealReminder = async (category: 'water' | 'screen' | 'both', slotId: string) => {
-    if (category === 'water') {
-      await markWaterStatus(slotId, 'skipped');
-      setActiveWaterModalOpen(false);
-    } else if (category === 'screen') {
-      await markScreenStatus(slotId, 'skipped');
-      setActiveBreakModalOpen(false);
-    } else {
-      if (realActiveReminder?.waterSlotId) {
-        await markWaterStatus(realActiveReminder.waterSlotId, 'skipped');
-      }
-      if (realActiveReminder?.screenSlotId) {
-        await markScreenStatus(realActiveReminder.screenSlotId, 'skipped');
-      }
-      setActiveWaterModalOpen(false);
-      setActiveBreakModalOpen(false);
-    }
+    // Delivery represents completion. Skip break neutrally dismisses the optional timer without marking missed.
+    setActiveWaterModalOpen(false);
+    setActiveBreakModalOpen(false);
     setRealActiveReminder(null);
 
-    if ((window as any).eyeflowNative?.skipReminder) {
-      await (window as any).eyeflowNative.skipReminder(category === 'both' ? 'water' : category, slotId);
+    const desktopBridge = getDesktopBridge();
+    if (desktopBridge?.skipReminder) {
+      await desktopBridge.skipReminder(category === 'both' ? 'water' : category, slotId);
     }
   };
 
@@ -1358,8 +1522,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await storageEngine.saveDailyWaterLogs(todayStr, []);
     await storageEngine.saveDailyScreenLogs(todayStr, []);
     reminderEngine.clearFiredHistory();
-    if ((window as any).eyeflowNative?.resetTodayData) {
-      await (window as any).eyeflowNative.resetTodayData();
+    const desktopBridge = getDesktopBridge();
+    if (desktopBridge?.resetTodayData) {
+      await desktopBridge.resetTodayData();
     }
   };
 
@@ -1492,6 +1657,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const activeUid = currentUser?.id;
             if (activeUid) {
               try {
+                await androidScheduler.reconcileDeliveredReminders(activeUid, currentUser?.created_at, generalSettings.timezone);
                 await reminderService.flushOfflineEvents(activeUid);
                 await syncService.syncUserAccount(activeUid);
                 const todayEvents = await reminderService.getTodayEvents(activeUid, generalSettings.timezone);
@@ -1552,8 +1718,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (platform === 'web') return;
 
     const currentUserId = currentUser?.id || 'default_user';
+    const isPaused = pauseService.isRemindersPaused(pauseState, Date.now());
 
-    if (pauseState.isPaused || !notificationSettings.enabled) {
+    if (isPaused || !notificationSettings.enabled) {
       backgroundScheduler.cancelUserSchedule(currentUserId);
       return;
     }
@@ -1601,26 +1768,98 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     screenBreakConfig,
     pauseState,
     notificationSettings.enabled,
-    currentDeviceTimestamp,
     currentUser?.id,
   ]);
 
-  // 7. Mobile (Android) & Desktop (Windows) Notification Tap Listeners
+  // 7. Mobile (Android) & Desktop (Windows) Notification Delivery & Tap Listeners
   useEffect(() => {
     let actionListener: any = null;
+    let receivedListener: any = null;
+    let nativeDeliveredListener: any = null;
     let desktopListenerCleanup: (() => void) | null = null;
+    let foregroundInterval: ReturnType<typeof setInterval> | null = null;
 
     async function setupListeners() {
       const platform = detectPlatform();
 
-      // Android Capacitor Notification Tap (Opens Reminder UI without auto-completing)
+      // Android Native Alarm Delivery & Tap Listeners
       if (platform === 'android') {
         try {
+          console.log('[PauseFlow][Bridge] listener_register_start');
+
+          // 1. NATIVE EXACT ALARM DELIVERY = IMMEDIATE COMPLETION (User does not need to tap or open timer)
+          nativeDeliveredListener = await PauseFlowNative.addListener(
+            'reminderDelivered',
+            async (data) => {
+              console.log(`[PauseFlow][Bridge] listener_received eventId=${data?.eventId} category=${data?.category} userId=${data?.userId}`);
+
+              if (data?.userId && currentUser?.id && data.userId !== 'default_user' && data.userId !== 'local_user' && data.userId !== currentUser.id) {
+                console.log(`[PauseFlow][Bridge] Ignored event for non-matching userId: ${data.userId}`);
+                return;
+              }
+
+              const rawCategory = (data?.category || 'water').toLowerCase();
+              const category = rawCategory === 'screen' || rawCategory === 'look_outside' ? 'look_outside' : 'water';
+              const targetUserId = currentUser?.id || data?.userId || 'local_user';
+              const now = Date.now();
+              const scheduledTimestamp = data?.scheduledTimestamp || data?.timestamp || now;
+              const scheduledIso = new Date(scheduledTimestamp).toISOString();
+              const eventId = data?.eventId || `native-${scheduledTimestamp}`;
+
+              console.log(`[PauseFlow][TRACE] stage=JS_RECEIVED eventId=${eventId} category=${category} userId=${targetUserId}`);
+
+              if (category === 'water') {
+                await reminderService.recordDelivered(targetUserId, 'water', eventId, scheduledIso);
+                await markWaterStatus(eventId, 'completed', scheduledTimestamp);
+              } else {
+                await reminderService.recordDelivered(targetUserId, 'look_outside', eventId, scheduledIso);
+                await markScreenStatus(eventId, 'completed', scheduledTimestamp);
+              }
+
+              console.log(`[PauseFlow][TRACE] stage=UI_PROGRESS_UPDATED eventId=${eventId} category=${category}`);
+
+              // Immediately reconcile any other pending records from SharedPreferences
+              await androidScheduler.reconcileDeliveredReminders(targetUserId, currentUser?.created_at, generalSettings.timezone);
+            }
+          );
+
+          console.log('[PauseFlow][Bridge] listener_register_success');
+
+          // Fallback: LocalNotifications received event (if any scheduled via Capacitor)
+          receivedListener = await LocalNotifications.addListener(
+            'localNotificationReceived',
+            async (notification) => {
+              const extra = notification.extra;
+              if (extra?.userId && currentUser?.id && extra.userId !== 'default_user' && extra.userId !== 'local_user' && extra.userId !== currentUser.id) {
+                return;
+              }
+
+              const rawCategory = (extra?.category || 'water').toLowerCase();
+              const category = rawCategory === 'screen' || rawCategory === 'look_outside' ? 'look_outside' : 'water';
+              const targetUserId = currentUser?.id || extra?.userId || 'local_user';
+              const now = Date.now();
+              const scheduledTimestamp = extra?.scheduledTimestamp || now;
+              const scheduledIso = new Date(scheduledTimestamp).toISOString();
+              const slotId = extra?.originalId || extra?.slotId || `notif-${scheduledTimestamp}`;
+
+              if (category === 'water') {
+                const wSlotId = extra?.waterSlotId || slotId;
+                await reminderService.recordDelivered(targetUserId, 'water', wSlotId, scheduledIso);
+                await markWaterStatus(wSlotId, 'completed', scheduledTimestamp);
+              } else {
+                const sSlotId = extra?.screenSlotId || slotId;
+                await reminderService.recordDelivered(targetUserId, 'look_outside', sSlotId, scheduledIso);
+                await markScreenStatus(sSlotId, 'completed', scheduledTimestamp);
+              }
+            }
+          );
+
+          // 2. Notification Tap (Opens Optional Countdown Screen without re-marking completion)
           actionListener = await LocalNotifications.addListener(
             'localNotificationActionPerformed',
             (action) => {
               const extra = action.notification.extra;
-              if (extra?.userId && currentUser?.id && extra.userId !== currentUser.id) {
+              if (extra?.userId && currentUser?.id && extra.userId !== 'default_user' && extra.userId !== 'local_user' && extra.userId !== currentUser.id) {
                 console.log('[AppContext] Ignored notification from different user account.');
                 return;
               }
@@ -1657,14 +1896,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               }
             }
           );
+
+          // Reconcile past-due delivered reminders on startup
+          const uid = currentUser?.id || 'default_user';
+          androidScheduler.reconcileDeliveredReminders(uid, currentUser?.created_at, generalSettings.timezone);
+
+          // Event-driven foreground periodic check (every 15s) to guarantee reconciliation while app stays open
+          foregroundInterval = setInterval(() => {
+            const activeUid = currentUser?.id || 'default_user';
+            androidScheduler.reconcileDeliveredReminders(activeUid, currentUser?.created_at, generalSettings.timezone);
+          }, 15000);
         } catch (err) {
-          console.warn('Could not register notification action listener:', err);
+          console.warn('[PauseFlow][Bridge] Could not register notification listeners:', err);
         }
       }
 
       // Windows Electron Notification Tap
-      if (platform === 'windows' && (window as any).eyeflowNative?.onNotificationTap) {
-        desktopListenerCleanup = (window as any).eyeflowNative.onNotificationTap((data: any) => {
+      const desktopBridge = getDesktopBridge();
+      if (platform === 'windows' && desktopBridge?.onNotificationTap) {
+        desktopListenerCleanup = desktopBridge.onNotificationTap((data: any) => {
           if (data?.userId && currentUser?.id && data.userId !== currentUser.id) {
             console.log('[AppContext] Windows notification belongs to another user. Ignoring.');
             return;
@@ -1682,14 +1932,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setupListeners();
 
     return () => {
+      if (foregroundInterval) {
+        clearInterval(foregroundInterval);
+      }
       if (actionListener?.remove) {
         actionListener.remove();
+      }
+      if (receivedListener?.remove) {
+        receivedListener.remove();
+      }
+      if (nativeDeliveredListener?.remove) {
+        nativeDeliveredListener.remove();
       }
       if (desktopListenerCleanup) {
         desktopListenerCleanup();
       }
     };
-  }, [waterConfig.durationMinutes, screenBreakConfig.breakDurationMinutes, currentUser?.id]);
+  }, [waterConfig.durationMinutes, screenBreakConfig.breakDurationMinutes, currentUser?.id, currentUser?.created_at, generalSettings.timezone]);
 
   return (
     <AppContext.Provider
@@ -1742,8 +2001,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         activeWaterModalOpen,
         activePauseModalOpen,
         setActivePauseModalOpen,
-        activeAuthModalOpen,
-        setActiveAuthModalOpen,
 
         startPreview,
         finishPreview,

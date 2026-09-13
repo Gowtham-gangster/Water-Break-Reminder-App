@@ -1,7 +1,7 @@
-// Electron Preload IPC Bridge for EyeFlow Native Desktop
+// Electron Preload IPC Bridge for PauseFlow Native Desktop
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('eyeflowNative', {
+const nativeApi = {
   isDesktop: true,
   platform: process.platform,
 
@@ -64,4 +64,12 @@ contextBridge.exposeInMainWorld('eyeflowNative', {
     ipcRenderer.on('native-reminder-expired', handler);
     return () => ipcRenderer.removeListener('native-reminder-expired', handler);
   },
-});
+  onNativePauseStateChange: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('onNativePauseStateChange', handler);
+    return () => ipcRenderer.removeListener('onNativePauseStateChange', handler);
+  },
+};
+
+contextBridge.exposeInMainWorld('pauseflowNative', nativeApi);
+contextBridge.exposeInMainWorld('eyeflowNative', nativeApi);

@@ -1,5 +1,5 @@
 // src/services/profileService.ts
-// EyeFlow V2 — Official Supabase User Profile Service
+// PauseFlow V2 — Official Supabase User Profile Service
 
 import { supabase } from './supabaseClient.ts';
 import { storageEngine } from '../engine/storageEngine.ts';
@@ -10,7 +10,7 @@ export class ProfileService {
    * Returns the user-scoped local cache key for a profile
    */
   public getScopedProfileKey(userId: string): string {
-    return `eyeflow:v2:${userId}:profile`;
+    return `pauseflow:v2:${userId}:profile`;
   }
 
   /**

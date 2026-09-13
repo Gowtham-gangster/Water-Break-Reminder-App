@@ -1,5 +1,5 @@
 // src/services/profileAvatarService.ts
-// EyeFlow V2 — Official Supabase Storage Avatar & Profile Photo Synchronization Engine
+// PauseFlow V2 — Official Supabase Storage Avatar & Profile Photo Synchronization Engine
 
 import { supabase } from './supabaseClient.ts';
 import { profileService } from './profileService.ts';

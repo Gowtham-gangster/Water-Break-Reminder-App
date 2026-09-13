@@ -8,21 +8,44 @@ echo.
 
 set "SCRIPT_DIR=%~dp0"
 set "ROOT_DIR=%SCRIPT_DIR%..\.."
-set "SOURCE_DIR=%ROOT_DIR%\dist-electron\win-unpacked"
+set "SOURCE_DIR="
 set "INSTALL_DIR=%LOCALAPPDATA%\Programs\PauseFlow"
 set "TARGET_EXE=%INSTALL_DIR%\PauseFlow.exe"
 
-if not exist "%SOURCE_DIR%\PauseFlow.exe" (
-    set "SOURCE_DIR=%ROOT_DIR%\dist-desktop\win-unpacked"
-)
-if not exist "%SOURCE_DIR%\PauseFlow.exe" (
-    set "SOURCE_DIR=%ROOT_DIR%\release\PauseFlow-2.0.0-rc1-Windows\package"
+REM 1. Check in dist-electron\win-unpacked
+if exist "%ROOT_DIR%\dist-electron\win-unpacked\PauseFlow.exe" (
+    set "SOURCE_DIR=%ROOT_DIR%\dist-electron\win-unpacked"
 )
 
-if not exist "%SOURCE_DIR%\PauseFlow.exe" (
+REM 2. Check in releases\desktop
+if not defined SOURCE_DIR (
+    if exist "%SCRIPT_DIR%PauseFlow.exe" (
+        set "SOURCE_DIR=%SCRIPT_DIR%"
+    ) else if exist "%ROOT_DIR%\releases\desktop\PauseFlow.exe" (
+        set "SOURCE_DIR=%ROOT_DIR%\releases\desktop"
+    )
+)
+
+REM 3. Check in dist-desktop\win-unpacked
+if not defined SOURCE_DIR (
+    if exist "%ROOT_DIR%\dist-desktop\win-unpacked\PauseFlow.exe" (
+        set "SOURCE_DIR=%ROOT_DIR%\dist-desktop\win-unpacked"
+    )
+)
+
+REM 4. Check in release packages
+if not defined SOURCE_DIR (
+    if exist "%ROOT_DIR%\release\PauseFlow-2.0.0-rc1-Windows\package\PauseFlow.exe" (
+        set "SOURCE_DIR=%ROOT_DIR%\release\PauseFlow-2.0.0-rc1-Windows\package"
+    )
+)
+
+if not defined SOURCE_DIR (
     echo [ERROR] Packaged PauseFlow application build not found!
     echo Looked in:
     echo   - %ROOT_DIR%\dist-electron\win-unpacked
+    echo   - %ROOT_DIR%\releases\desktop
+    echo   - %SCRIPT_DIR%
     echo.
     echo Please run 'npm run package:win' in the project root first.
     echo.
@@ -36,7 +59,13 @@ ping 127.0.0.1 -n 2 >nul
 
 echo [2/4] Installing PauseFlow application bundle to: %INSTALL_DIR%
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
-robocopy "%SOURCE_DIR%" "%INSTALL_DIR%" /E /R:1 /W:1 /NP /NFL /NDL /NJH /NJS >nul
+
+if exist "%SOURCE_DIR%\resources" (
+    robocopy "%SOURCE_DIR%" "%INSTALL_DIR%" /E /R:1 /W:1 /NP /NFL /NDL /NJH /NJS >nul
+) else (
+    copy /Y "%SOURCE_DIR%\PauseFlow.exe" "%TARGET_EXE%" >nul
+)
+
 if errorlevel 8 (
     echo [ERROR] Failed to copy application files to %INSTALL_DIR%.
     pause

@@ -1,5 +1,6 @@
 import React from 'react';
 import { clsx } from 'clsx';
+import pauseflowLogo from '../../assets/pauseflow-logo.png';
 
 export interface BrandLogoProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
@@ -7,6 +8,7 @@ export interface BrandLogoProps {
   textClassName?: string;
   className?: string;
   imageClassName?: string;
+  subtitle?: string;
 }
 
 const sizeConfig = {
@@ -38,14 +40,15 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
   textClassName,
   className,
   imageClassName,
+  subtitle,
 }) => {
   const config = sizeConfig[size];
 
   return (
     <div className={clsx('inline-flex items-center select-none', config.gap, className)}>
       <img
-        src="/icon.png"
-        alt="PauseFlow Logo"
+        src={pauseflowLogo}
+        alt="PauseFlow"
         className={clsx(
           'object-contain shrink-0 aspect-square',
           config.image,
@@ -53,12 +56,20 @@ export const BrandLogo: React.FC<BrandLogoProps> = ({
         )}
       />
       {showText && (
-        <span className={clsx('text-white/95 leading-none', config.text, textClassName)}>
-          PauseFlow
-        </span>
+        <div className="min-w-0">
+          <span className={clsx('text-white/95 leading-none block', config.text, textClassName)}>
+            PauseFlow
+          </span>
+          {subtitle && (
+            <span className="text-[11px] text-[var(--text-muted)] font-medium leading-none block mt-0.5">
+              {subtitle}
+            </span>
+          )}
+        </div>
       )}
     </div>
   );
 };
 
 export const PauseFlowLogo = BrandLogo;
+

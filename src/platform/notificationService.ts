@@ -70,13 +70,15 @@ class AndroidNotificationService implements INotificationService {
   async sendImmediate(payload: NotificationPayload): Promise<void> {
     await androidScheduler.initChannels();
     try {
-      const channelId = payload.category === 'water' ? 'eyeflow_water_channel' : 'eyeflow_screen_channel';
+      const channelId = payload.category === 'water' ? 'pauseflow_water_channel' : 'pauseflow_screen_channel';
       await LocalNotifications.schedule({
         notifications: [
           {
             title: payload.title,
             body: payload.body,
             id: Math.floor(Date.now() % 900000) + 10000,
+            smallIcon: 'pauseflow_notification',
+            iconColor: '#0284c7',
             schedule: { at: new Date(Date.now() + 100), allowWhileIdle: true },
             channelId,
             actionTypeId: payload.category,

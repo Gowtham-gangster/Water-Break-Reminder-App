@@ -9,7 +9,6 @@ export const WaterBreakModal: React.FC = () => {
     realActiveReminder,
     previewReminder,
     completeRealReminder,
-    skipRealReminder,
     finishPreview,
     waterConfig,
   } = useApp();
@@ -31,14 +30,6 @@ export const WaterBreakModal: React.FC = () => {
   const [isCompleted, setIsCompleted] = useState(false);
 
   const hasCompletedRef = useRef<boolean>(false);
-
-  const handleSkip = async () => {
-    if (isReal && realActiveReminder) {
-      await skipRealReminder('water', realActiveReminder.slotId);
-    } else {
-      finishPreview('water');
-    }
-  };
 
   useEffect(() => {
     if (!activeWaterModalOpen || (!isReal && !isPreview)) return;
@@ -134,16 +125,6 @@ export const WaterBreakModal: React.FC = () => {
             <p className="text-xs text-[var(--text-muted)] font-medium">
               Take a slow sip. Window closes automatically when complete.
             </p>
-
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={handleSkip}
-                className="px-4 py-1.5 rounded-full text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface-hover)] border border-[var(--border-subtle)] transition-colors"
-              >
-                Skip Break
-              </button>
-            </div>
           </div>
         )}
       </div>

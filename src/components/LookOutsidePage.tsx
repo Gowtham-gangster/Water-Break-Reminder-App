@@ -7,6 +7,7 @@ import {
   AlertCircle,
   Calendar,
 } from 'lucide-react';
+import { calculateAuthoritativeExpected, isScheduleWindowActive } from '../services/reminderService';
 
 const DAYS_OF_WEEK = [
   { id: 1, label: 'Mon', full: 'Monday' },
@@ -40,6 +41,10 @@ export const LookOutsidePage: React.FC = () => {
 
   const [validationError, setValidationError] = useState<string | null>(null);
   const [timeRemaining, setTimeRemaining] = useState('');
+
+  const expectedCount = calculateAuthoritativeExpected(screenBreakConfig, undefined, 20);
+  const isScheduleActive = isScheduleWindowActive(screenBreakConfig);
+  const missedCount = isScheduleActive ? 0 : Math.max(0, expectedCount - screenCompletedCount);
 
   useEffect(() => {
     setFormData({
@@ -94,8 +99,8 @@ export const LookOutsidePage: React.FC = () => {
     }
 
     if (!formData.screenIntervalMinutes || Number(formData.screenIntervalMinutes) <= 0) {
-      setValidationError('Screen interval must be a positive number of minutes (greater than 0).');
-      showToast('Invalid screen interval value.', 'error');
+      setValidationError('Interval must be a positive number of minutes (greater than 0).');
+      showToast('Invalid interval value.', 'error');
       return;
     }
 
@@ -120,7 +125,7 @@ export const LookOutsidePage: React.FC = () => {
       endTime: formData.endTime,
       screenIntervalMinutes: Number(formData.screenIntervalMinutes),
       breakDurationMinutes: Number(formData.breakDurationMinutes),
-      reminderStyle: formData.reminderStyle as 'fullscreen' | 'notification',
+      reminderStyle: (formData.reminderStyle || 'fullscreen') as 'fullscreen' | 'notification',
       activeDays: formData.activeDays,
     });
 
@@ -169,9 +174,9 @@ export const LookOutsidePage: React.FC = () => {
             )}
           </div>
           <p className="text-xs text-[var(--text-secondary)]">
-            {screenCompletedCount === 0
-              ? 'No screen breaks logged yet today.'
-              : `${screenCompletedCount} break${screenCompletedCount === 1 ? '' : 's'} completed today.`}
+            {isScheduleActive
+              ? `${screenCompletedCount} / ${expectedCount} breaks completed today.`
+              : `${screenCompletedCount} completed · ${missedCount} missed today.`}
           </p>
         </div>
       </Card>

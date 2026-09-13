@@ -1,5 +1,5 @@
 // src/services/healthCheckService.ts
-// EyeFlow V2 — Safe Supabase Connection & Health Diagnostics Service
+// PauseFlow V2 — Safe Supabase Connection & Health Diagnostics Service
 
 import { supabase } from './supabaseClient.ts';
 import { SUPABASE_CONFIG } from '../config/supabase.config.ts';

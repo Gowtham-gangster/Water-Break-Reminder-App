@@ -1,4 +1,4 @@
-// Platform Architecture Types for EyeFlow (Windows Desktop Electron, Android Capacitor, Web)
+// Platform Architecture Types for PauseFlow (Windows Desktop Electron, Android Capacitor, Web)
 
 export type PlatformType = 'windows' | 'android' | 'web';
 

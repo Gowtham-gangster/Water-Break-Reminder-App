@@ -8,6 +8,7 @@ import {
   AlertCircle,
   Calendar,
 } from 'lucide-react';
+import { calculateAuthoritativeExpected, isScheduleWindowActive } from '../services/reminderService';
 
 const DAYS_OF_WEEK = [
   { id: 1, label: 'Mon', full: 'Monday' },
@@ -41,6 +42,10 @@ export const WaterPage: React.FC = () => {
 
   const [validationError, setValidationError] = useState<string | null>(null);
   const [timeRemaining, setTimeRemaining] = useState('');
+
+  const expectedCount = calculateAuthoritativeExpected(waterConfig);
+  const isScheduleActive = isScheduleWindowActive(waterConfig);
+  const missedCount = isScheduleActive ? 0 : Math.max(0, expectedCount - waterCompletedCount);
 
   useEffect(() => {
     setFormData({
@@ -169,9 +174,9 @@ export const WaterPage: React.FC = () => {
               )}
             </div>
             <p className="text-xs text-[var(--text-secondary)]">
-              {waterCompletedCount === 0
-                ? 'No water reminders logged yet today.'
-                : `${waterCompletedCount} reminder${waterCompletedCount === 1 ? '' : 's'} completed today.`}
+              {isScheduleActive
+                ? `${waterCompletedCount} / ${expectedCount} reminders completed today.`
+                : `${waterCompletedCount} completed · ${missedCount} missed today.`}
             </p>
           </div>
 

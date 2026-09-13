@@ -1,4 +1,4 @@
-// Generates valid PNG icons for EyeFlow Windows App and System Tray
+// Generates valid PNG icons for PauseFlow Windows App and System Tray
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');

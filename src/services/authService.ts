@@ -1,9 +1,12 @@
 // src/services/authService.ts
-// EyeFlow V2 — Official Supabase Authentication Service
+// PauseFlow V2 — Official Supabase Authentication Service & Session Persistence Engine
 
 import type { User, Session, AuthChangeEvent } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient.ts';
 import { storageEngine } from '../engine/storageEngine.ts';
+
+export const AUTH_STORAGE_KEY = 'pauseflow:v2:auth:session';
+export const LEGACY_AUTH_STORAGE_KEY = 'eyeflow:v2:auth:session';
 
 export interface UserProfile {
   id: string;
@@ -26,6 +29,7 @@ export interface AuthResponse<T = any> {
 export class AuthService {
   private inFlightSignUpPromise: Promise<AuthResponse<{ user: User | null; session: Session | null }>> | null = null;
   private inFlightSignInPromise: Promise<AuthResponse<{ user: User; session: Session }>> | null = null;
+  private isRefreshingToken = false;
 
   /**
    * Checks if an error is an authentication rate limit error
@@ -55,8 +59,7 @@ export class AuthService {
   public formatAuthError(err: any): string {
     if (!err) return 'An unexpected authentication error occurred.';
 
-    // Structured development logging without exposing sensitive data
-    console.error('[EyeFlow Auth Error Diagnostics]', {
+    console.error('[PauseFlow Auth Error Diagnostics]', {
       message: err?.message,
       code: err?.code,
       status: err?.status,
@@ -69,12 +72,10 @@ export class AuthService {
     const code = err?.code || '';
     const lower = msg.toLowerCase();
 
-    // 1. Rate Limit / Too Many Attempts (HTTP 429)
     if (this.isRateLimitError(err)) {
       return 'Too many signup attempts. Please wait a few minutes before trying again.';
     }
 
-    // 2. Email Already Exists
     if (
       code === 'user_already_exists' ||
       lower.includes('user already registered') ||
@@ -84,7 +85,6 @@ export class AuthService {
       return 'This email is already registered. Try logging in instead.';
     }
 
-    // 3. Invalid Email Address Format or Domain
     if (
       code === 'email_address_invalid' ||
       (lower.includes('email address') && lower.includes('invalid')) ||
@@ -93,7 +93,6 @@ export class AuthService {
       return 'Please enter a valid, deliverable email address.';
     }
 
-    // 4. Invalid Credentials
     if (
       lower.includes('invalid login credentials') ||
       lower.includes('invalid_grant') ||
@@ -102,12 +101,10 @@ export class AuthService {
       return 'Invalid email or password. Please check your credentials and try again.';
     }
 
-    // 5. Email Not Confirmed
     if (lower.includes('email not confirmed')) {
       return 'Please verify your email address before logging in. Check your inbox for the confirmation link.';
     }
 
-    // 6. Weak / Rejected Password
     if (
       code === 'weak_password' ||
       lower.includes('password should be at least') ||
@@ -116,7 +113,6 @@ export class AuthService {
       return 'Your password does not meet security requirements. Please use at least 6 characters.';
     }
 
-    // 7. Network / Fetch Failures vs Service Unreachable
     if (
       lower.includes('failed to fetch') ||
       lower.includes('network error') ||
@@ -131,7 +127,6 @@ export class AuthService {
       return 'Authentication service is temporarily unavailable. Please try again shortly.';
     }
 
-    // 8. Timeout
     if (lower.includes('timeout') || lower.includes('took too long') || code === 'timeout') {
       return 'The request took too long to complete. Please try again.';
     }
@@ -140,7 +135,7 @@ export class AuthService {
   }
 
   /**
-   * Helper to convert Supabase User to EyeFlow UserProfile
+   * Helper to convert Supabase User to PauseFlow UserProfile
    */
   public toUserProfile(user: User): UserProfile {
     return {
@@ -158,6 +153,33 @@ export class AuthService {
   }
 
   /**
+   * Reads raw persisted session directly from local storage synchronously
+   * Checks new pauseflow key first, then falls back to legacy eyeflow key and migrates.
+   */
+  public getLocalPersistedSession(): Session | null {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        let raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+        if (!raw) {
+          raw = window.localStorage.getItem(LEGACY_AUTH_STORAGE_KEY);
+          if (raw) {
+            window.localStorage.setItem(AUTH_STORAGE_KEY, raw);
+          }
+        }
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && (parsed.user || parsed.access_token)) {
+            return parsed as Session;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[PauseFlow Auth] Could not read local persisted session:', e);
+    }
+    return null;
+  }
+
+  /**
    * Register a new user with Supabase Auth with single-flight deduplication
    */
   public async signUp(
@@ -165,9 +187,8 @@ export class AuthService {
     password: string,
     displayName?: string
   ): Promise<AuthResponse<{ user: User | null; session: Session | null }>> {
-    // If a signup request is already in-flight, return the active promise to avoid duplicate network calls
     if (this.inFlightSignUpPromise) {
-      console.warn('[EyeFlow Auth] Duplicate signup call intercepted; returning active request promise.');
+      console.warn('[PauseFlow Auth] Duplicate signup call intercepted; returning active request promise.');
       return this.inFlightSignUpPromise;
     }
 
@@ -233,7 +254,7 @@ export class AuthService {
     password: string
   ): Promise<AuthResponse<{ user: User; session: Session }>> {
     if (this.inFlightSignInPromise) {
-      console.warn('[EyeFlow Auth] Duplicate signin call intercepted; returning active request promise.');
+      console.warn('[PauseFlow Auth] Duplicate signin call intercepted; returning active request promise.');
       return this.inFlightSignInPromise;
     }
 
@@ -282,104 +303,148 @@ export class AuthService {
   }
 
   /**
-   * Safe promise wrapper with timeout to prevent network operations from blocking indefinitely
+   * Restore current active session from Supabase's built-in persistence or local fallback
    */
-  private async withTimeout<T>(promise: Promise<T>, ms: number = 4000, fallback: T): Promise<T> {
-    let timeoutId: any;
-    const timeoutPromise = new Promise<T>((resolve) => {
-      timeoutId = setTimeout(() => resolve(fallback), ms);
-    });
-
+  public async getSession(): Promise<Session | null> {
     try {
-      const result = await Promise.race([promise, timeoutPromise]);
-      clearTimeout(timeoutId);
-      return result;
+      const { data, error } = await supabase.auth.getSession();
+      if (!error && data.session) {
+        return data.session;
+      }
+    } catch (_) {}
+    return this.getLocalPersistedSession();
+  }
+
+  /**
+   * Get current authenticated user with local profile hydration
+   */
+  public async getCurrentUser(): Promise<UserProfile | null> {
+    try {
+      const session = await this.getSession();
+      if (!session || !session.user) return null;
+
+      const user = this.toUserProfile(session.user);
+      try {
+        const cachedProfile =
+          (await storageEngine.loadProfile(user.id)) ||
+          (await storageEngine.get<any>(`pauseflow:v2:${user.id}:profile`, null));
+        if (cachedProfile) {
+          if (cachedProfile.avatar_url) user.avatar_url = cachedProfile.avatar_url;
+          if (cachedProfile.display_name) user.display_name = cachedProfile.display_name;
+          if (cachedProfile.timezone) user.timezone = cachedProfile.timezone;
+        }
+      } catch (_) {}
+      return user;
     } catch {
-      clearTimeout(timeoutId);
-      return fallback;
+      return null;
     }
   }
 
   /**
-   * Restore current active session from Supabase's built-in persistence with strict timeout
-   */
-  public async getSession(): Promise<Session | null> {
-    return this.withTimeout(
-      (async () => {
-        try {
-          const { data, error } = await supabase.auth.getSession();
-          if (error || !data.session) return null;
-          return data.session;
-        } catch {
-          return null;
-        }
-      })(),
-      4000,
-      null
-    );
-  }
-
-  /**
-   * Get current authenticated user with strict timeout
-   */
-  public async getCurrentUser(): Promise<UserProfile | null> {
-    return this.withTimeout(
-      (async () => {
-        try {
-          const { data, error } = await supabase.auth.getUser();
-          if (error || !data.user) return null;
-          const user = this.toUserProfile(data.user);
-          try {
-            const cachedProfile =
-              (await storageEngine.loadProfile(user.id)) ||
-              (await storageEngine.get<any>(`eyeflow:v2:${user.id}:profile`, null));
-            if (cachedProfile) {
-              if (cachedProfile.avatar_url) user.avatar_url = cachedProfile.avatar_url;
-              if (cachedProfile.display_name) user.display_name = cachedProfile.display_name;
-              if (cachedProfile.timezone) user.timezone = cachedProfile.timezone;
-            }
-          } catch (_) {}
-          return user;
-        } catch {
-          return null;
-        }
-      })(),
-      4000,
-      null
-    );
-  }
-
-  /**
-   * Restores session and validates user state on app startup with strict fallback
+   * Restores session and validates user state on app startup with complete offline resilience.
+   * Follows the official PauseFlow multi-tier startup lifecycle:
+   * 1. Check local persisted session immediately
+   * 2. If session found -> user is authenticated immediately
+   * 3. If online -> refresh session in background without blocking UI
+   * 4. If offline -> authenticate from local cache
    */
   public async restoreSession(): Promise<{ user: UserProfile | null; session: Session | null; isAuthenticated: boolean }> {
-    return this.withTimeout(
-      (async () => {
-        try {
-          const session = await this.getSession();
-          if (!session || !session.user) {
-            return { user: null, session: null, isAuthenticated: false };
-          }
+    console.log('[AUTH BOOT: START]');
+    console.log('[AUTH BOOT: PERSISTED SESSION CHECK]');
 
-          const user = this.toUserProfile(session.user);
-          try {
-            const cachedProfile =
-              (await storageEngine.loadProfile(user.id)) ||
-              (await storageEngine.get<any>(`eyeflow:v2:${user.id}:profile`, null));
-            if (cachedProfile) {
-              if (cachedProfile.avatar_url) user.avatar_url = cachedProfile.avatar_url;
-              if (cachedProfile.display_name) user.display_name = cachedProfile.display_name;
-              if (cachedProfile.timezone) user.timezone = cachedProfile.timezone;
-            }
-          } catch (_) {}
-          return { user, session, isAuthenticated: true };
-        } catch {
-          return { user: null, session: null, isAuthenticated: false };
+    // Step 1: Immediate local storage inspection
+    const localSession = this.getLocalPersistedSession();
+
+    if (localSession && localSession.user) {
+      console.log('[AUTH BOOT: SESSION FOUND (LOCAL STORAGE)]');
+      const user = this.toUserProfile(localSession.user);
+
+      // Hydrate profile from local cache
+      console.log('[AUTH BOOT: PROFILE HYDRATION]');
+      try {
+        const cachedProfile =
+          (await storageEngine.loadProfile(user.id)) ||
+          (await storageEngine.get<any>(`pauseflow:v2:${user.id}:profile`, null));
+        if (cachedProfile) {
+          if (cachedProfile.avatar_url) user.avatar_url = cachedProfile.avatar_url;
+          if (cachedProfile.display_name) user.display_name = cachedProfile.display_name;
+          if (cachedProfile.timezone) user.timezone = cachedProfile.timezone;
         }
-      })(),
-      4000,
-      { user: null, session: null, isAuthenticated: false }
-    );
+      } catch (err) {
+        console.warn('[AUTH BOOT: PROFILE HYDRATION NON-FATAL ERROR]', err);
+      }
+
+      console.log('[AUTH BOOT: AUTH STATE = AUTHENTICATED]');
+      console.log('[AUTH BOOT: READY]');
+
+      // Step 2: Background session verification & refresh (Non-blocking)
+      const isOnline = typeof navigator === 'undefined' || navigator.onLine;
+      if (isOnline && !this.isRefreshingToken) {
+        this.isRefreshingToken = true;
+        console.log('[AUTH BOOT: SESSION REFRESH START]');
+        (async () => {
+          try {
+            const { data, error } = await supabase.auth.getSession();
+            if (error) {
+              const lower = error.message?.toLowerCase() || '';
+              if (
+                lower.includes('invalid_grant') ||
+                lower.includes('refresh_token_not_found') ||
+                lower.includes('user not found')
+              ) {
+                console.warn('[AUTH BOOT: SESSION REFRESH FAILURE — EXPLICITLY REVOKED]', error.message);
+                await this.signOut(user.id);
+                return;
+              }
+              console.warn('[AUTH BOOT: SESSION REFRESH NETWORK TRANSIENT FAILURE (RETAINING SESSION)]', error.message);
+            } else if (data.session) {
+              console.log('[AUTH BOOT: SESSION REFRESH SUCCESS]');
+            }
+          } catch (refErr: any) {
+            console.warn('[AUTH BOOT: SESSION REFRESH SKIPPED/OFFLINE]', refErr?.message || refErr);
+          } finally {
+            this.isRefreshingToken = false;
+          }
+        })();
+      } else if (!isOnline) {
+        console.log('[AUTH BOOT: OFFLINE MODE — USING LOCAL PERSISTENCE]');
+      }
+
+      return { user, session: localSession, isAuthenticated: true };
+    }
+
+    // Step 3: No raw local session found -> Try official Supabase client getSession()
+    try {
+      const { data, error } = await supabase.auth.getSession();
+      if (!error && data.session && data.session.user) {
+        console.log('[AUTH BOOT: SESSION FOUND (SUPABASE CLIENT)]');
+        const user = this.toUserProfile(data.session.user);
+
+        console.log('[AUTH BOOT: PROFILE HYDRATION]');
+        try {
+          const cachedProfile =
+            (await storageEngine.loadProfile(user.id)) ||
+            (await storageEngine.get<any>(`pauseflow:v2:${user.id}:profile`, null));
+          if (cachedProfile) {
+            if (cachedProfile.avatar_url) user.avatar_url = cachedProfile.avatar_url;
+            if (cachedProfile.display_name) user.display_name = cachedProfile.display_name;
+            if (cachedProfile.timezone) user.timezone = cachedProfile.timezone;
+          }
+        } catch (_) {}
+
+        console.log('[AUTH BOOT: AUTH STATE = AUTHENTICATED]');
+        console.log('[AUTH BOOT: READY]');
+        return { user, session: data.session, isAuthenticated: true };
+      }
+    } catch (err: any) {
+      console.warn('[AUTH BOOT: getSession error]', err?.message || err);
+    }
+
+    // Step 4: Truly unauthenticated (no session exists anywhere)
+    console.log('[AUTH BOOT: SESSION NOT FOUND]');
+    console.log('[AUTH BOOT: AUTH STATE = UNAUTHENTICATED]');
+    console.log('[AUTH BOOT: READY]');
+    return { user: null, session: null, isAuthenticated: false };
   }
 
   /**
@@ -388,8 +453,12 @@ export class AuthService {
   public async signOut(userId?: string): Promise<{ error: string | null }> {
     try {
       if (userId) {
-        // Clear user-scoped transient state and active timers
         await storageEngine.clearUserScopedTransientState(userId);
+      }
+
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(AUTH_STORAGE_KEY);
+        window.localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
       }
 
       const { error } = await supabase.auth.signOut();
@@ -448,7 +517,7 @@ export class AuthService {
    * Check whether a user is currently authenticated
    */
   public isAuthenticated(): boolean {
-    return Boolean(supabase.auth.getSession());
+    return Boolean(this.getLocalPersistedSession() || supabase.auth.getSession());
   }
 
   /**
@@ -507,7 +576,6 @@ export class AuthService {
       if (!user) {
         return { error: 'No active authenticated user to delete.' };
       }
-      // Delete user profile record (triggers cascade if FK exists)
       await (supabase.from('profiles') as any).delete().eq('id', user.id);
       await this.signOut(user.id);
       return { error: null };
@@ -525,4 +593,3 @@ export class AuthService {
 }
 
 export const authService = new AuthService();
-

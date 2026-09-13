@@ -1,4 +1,4 @@
-// Central application configuration for EyeFlow Digital Wellness Assistant
+// Central application configuration for PauseFlow Digital Wellness Assistant
 
 export interface AppConfig {
   name: string;

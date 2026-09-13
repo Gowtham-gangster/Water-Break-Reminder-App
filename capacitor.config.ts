@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.eyeflow.app',
+  appId: 'com.pauseflow.app',
   appName: 'PauseFlow',
   webDir: 'dist',
   server: {
@@ -9,7 +9,7 @@ const config: CapacitorConfig = {
   },
   plugins: {
     LocalNotifications: {
-      smallIcon: 'ic_stat_eyeflow',
+      smallIcon: 'pauseflow_notification',
       iconColor: '#0284c7',
       sound: 'bell.wav'
     }

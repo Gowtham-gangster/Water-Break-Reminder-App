@@ -1,4 +1,4 @@
-// Real-Time Dynamic Scheduler Engine for EyeFlow
+// Real-Time Dynamic Scheduler Engine for PauseFlow
 // Pure, deterministic, real-time calculation derived from device Date.now()
 import type {
   WaterConfig,
@@ -7,6 +7,7 @@ import type {
   WaterReminderLog,
   ScreenBreakLog,
 } from '../types';
+import { pauseService } from '../services/pauseService.ts';
 
 export interface NextReminderInfo {
   type: 'water' | 'screen';
@@ -224,10 +225,7 @@ export class ReminderEngineService {
       '0'
     )}-${String(now.getDate()).padStart(2, '0')}`;
 
-    const isCurrentlyPaused =
-      pauseState.isPaused &&
-      pauseState.pauseUntil !== null &&
-      new Date(pauseState.pauseUntil).getTime() > currentTimestamp;
+    const isCurrentlyPaused = pauseService.isRemindersPaused(pauseState, currentTimestamp);
 
     // ==========================================
     // 1. WATER REMINDER SLOTS CALCULATION
@@ -253,7 +251,10 @@ export class ReminderEngineService {
       );
 
       const waterLogsMap = new Map<string, WaterReminderLog>();
-      existingWaterLogs.forEach((l) => waterLogsMap.set(l.time, l));
+      existingWaterLogs.forEach((l) => {
+        if (l.time) waterLogsMap.set(l.time, l);
+        if (l.id) waterLogsMap.set(l.id, l);
+      });
 
       let quietStart = -1;
       let quietEnd = -1;
@@ -283,10 +284,19 @@ export class ReminderEngineService {
         if (isQuietTime(m)) continue;
 
         const slotId = this.generateSlotId('water', todayDateStr, occ.timeString);
-        const existing = waterLogsMap.get(occ.timeString);
+        const existing =
+          waterLogsMap.get(occ.timeString) ||
+          waterLogsMap.get(slotId) ||
+          existingWaterLogs.find(
+            (l) =>
+              l.id === slotId ||
+              l.time === occ.timeString ||
+              (l.id && l.id.endsWith(`:${occ.timeString}`)) ||
+              (l.id && l.id.endsWith(`-${occ.timeString}`))
+          );
 
         if (existing && existing.status === 'completed') {
-          waterSlots.push(existing);
+          waterSlots.push({ ...existing, id: slotId, time: occ.timeString });
         } else if (occ.timestamp <= currentTimestamp) {
           // Past occurrence without recorded completion is marked 'missed'
           waterSlots.push({
@@ -348,14 +358,26 @@ export class ReminderEngineService {
       );
 
       const screenLogsMap = new Map<string, ScreenBreakLog>();
-      existingScreenLogs.forEach((l) => screenLogsMap.set(l.time, l));
+      existingScreenLogs.forEach((l) => {
+        if (l.time) screenLogsMap.set(l.time, l);
+        if (l.id) screenLogsMap.set(l.id, l);
+      });
 
       for (const occ of occurrences) {
         const slotId = this.generateSlotId('screen', todayDateStr, occ.timeString);
-        const existing = screenLogsMap.get(occ.timeString);
+        const existing =
+          screenLogsMap.get(occ.timeString) ||
+          screenLogsMap.get(slotId) ||
+          existingScreenLogs.find(
+            (l) =>
+              l.id === slotId ||
+              l.time === occ.timeString ||
+              (l.id && l.id.endsWith(`:${occ.timeString}`)) ||
+              (l.id && l.id.endsWith(`-${occ.timeString}`))
+          );
 
         if (existing && existing.status === 'completed') {
-          screenSlots.push(existing);
+          screenSlots.push({ ...existing, id: slotId, time: occ.timeString });
         } else if (occ.timestamp <= currentTimestamp) {
           // Past occurrence without recorded completion is marked 'missed'
           screenSlots.push({

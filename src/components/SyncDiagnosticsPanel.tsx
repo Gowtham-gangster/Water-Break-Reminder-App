@@ -32,7 +32,9 @@ export const SyncDiagnosticsPanel: React.FC<{ isOpen: boolean; onClose: () => vo
   const refreshDiagnostics = async () => {
     setLoading(true);
     try {
-      const isDesktop = typeof window !== 'undefined' && Boolean((window as any).eyeflowNative?.isDesktop);
+      const isDesktop =
+        typeof window !== 'undefined' &&
+        Boolean((window as any).pauseflowNative?.isDesktop || (window as any).eyeflowNative?.isDesktop);
       const isAndroid = typeof window !== 'undefined' && Boolean((window as any).Capacitor?.isNativePlatform());
       const platform = isDesktop ? 'Windows Desktop' : isAndroid ? 'Android Mobile' : 'Web Browser';
 
@@ -40,12 +42,12 @@ export const SyncDiagnosticsPanel: React.FC<{ isOpen: boolean; onClose: () => vo
       const projectHost = new URL(SUPABASE_CONFIG.url).hostname;
 
       // Pending queue count
-      const queue = (await storageEngine.get<any[]>(`eyeflow:v2:${userId}:pending_sync_queue`, [])) || [];
+      const queue = (await storageEngine.get<any[]>(`pauseflow:v2:${userId}:pending_sync_queue`, [])) || [];
 
       // Local vs Cloud states
-      const cachedWater = await storageEngine.get<any>(`eyeflow:v2:${userId}:water`, null);
-      const cachedLook = await storageEngine.get<any>(`eyeflow:v2:${userId}:lookOutside`, null);
-      const cachedProfile = await storageEngine.get<any>(`eyeflow:v2:${userId}:profile`, null);
+      const cachedWater = await storageEngine.get<any>(`pauseflow:v2:${userId}:water`, null);
+      const cachedLook = await storageEngine.get<any>(`pauseflow:v2:${userId}:lookOutside`, null);
+      const cachedProfile = await storageEngine.get<any>(`pauseflow:v2:${userId}:profile`, null);
 
       const realtimeStatus = realtimeSyncService.getStatus();
       const lastEvent = realtimeSyncService.getLastEvent();

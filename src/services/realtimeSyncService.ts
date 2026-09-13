@@ -1,5 +1,5 @@
 // src/services/realtimeSyncService.ts
-// EyeFlow V2 — Supabase Realtime Multi-Device Synchronization Channel Manager
+// PauseFlow V2 — Supabase Realtime Multi-Device Synchronization Channel Manager
 
 import { supabase } from './supabaseClient.ts';
 import { SUPABASE_CONFIG } from '../config/supabase.config.ts';
@@ -11,6 +11,7 @@ import type {
   ProfileEntity,
   ReminderEventEntity,
 } from '../types/index.ts';
+import type { ReminderPauseStateEntity } from './pauseService.ts';
 
 export type RealtimeSyncCallback<T> = (payload: {
   eventType: 'INSERT' | 'UPDATE' | 'DELETE';
@@ -34,6 +35,7 @@ export class RealtimeSyncService {
   private settingsListeners: Set<RealtimeSyncCallback<UserSettingsEntity>> = new Set();
   private profileListeners: Set<RealtimeSyncCallback<ProfileEntity>> = new Set();
   private reminderEventListeners: Set<RealtimeSyncCallback<ReminderEventEntity>> = new Set();
+  private pauseStateListeners: Set<RealtimeSyncCallback<ReminderPauseStateEntity>> = new Set();
   private statusListeners: Set<(status: RealtimeChannelStatus) => void> = new Set();
 
   public getStatus(): RealtimeChannelStatus {
@@ -73,11 +75,11 @@ export class RealtimeSyncService {
     this.currentUserId = userId;
     this.setStatus('CONNECTING');
 
-    const channelName = `user_sync_${userId}_${Date.now()}`;
+    const channelName = `user_sync_${userId}`;
     const projectHost = new URL(SUPABASE_CONFIG.url).hostname;
-    console.log(`[Realtime] creating channel ${channelName}`);
-    console.log(`[Realtime] userId = ${userId}`);
-    console.log(`[Realtime] project = ${projectHost}`);
+    console.log(`[PauseFlow][Realtime][Pause] creating channel = ${channelName}`);
+    console.log(`[PauseFlow][Realtime][Pause] userId = ${userId}`);
+    console.log(`[PauseFlow][Realtime][Pause] project = ${projectHost}`);
 
     try {
       this.channel = supabase
@@ -205,25 +207,73 @@ export class RealtimeSyncService {
             });
           }
         )
+        // 6a. Global Reminder Pause State - Postgres Changes
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'reminder_pause_state',
+          },
+          (payload: any) => {
+            const rowUserId = payload?.new?.user_id || payload?.old?.user_id;
+            if (rowUserId && rowUserId !== this.currentUserId) return;
+
+            console.log('[PauseFlow][Realtime][Pause] event = POSTGRES_UPDATE user_id =', rowUserId, 'paused_until =', payload.new?.paused_until);
+            this.lastEventTimestamp = new Date().toISOString();
+            this.lastEventTable = 'reminder_pause_state';
+            this.pauseStateListeners.forEach((cb) => {
+              try {
+                cb(payload);
+              } catch (e) {
+                console.warn('[Realtime] Pause state listener error:', e);
+              }
+            });
+          }
+        )
+        // 6b. Global Reminder Pause State - Broadcast Channel
+        .on(
+          'broadcast',
+          { event: 'pause_state' },
+          (msg: any) => {
+            const payload = msg?.payload;
+            if (!payload || payload.user_id !== this.currentUserId) return;
+
+            console.log('[PauseFlow][Realtime][Pause] event = BROADCAST_UPDATE user_id =', payload.user_id, 'paused_until =', payload.paused_until);
+            this.lastEventTimestamp = new Date().toISOString();
+            this.lastEventTable = 'reminder_pause_state';
+            this.pauseStateListeners.forEach((cb) => {
+              try {
+                cb({
+                  eventType: payload.paused_until ? 'UPDATE' : 'DELETE',
+                  new: payload,
+                  old: {},
+                });
+              } catch (e) {
+                console.warn('[Realtime] Pause broadcast listener error:', e);
+              }
+            });
+          }
+        )
         .subscribe((status, err) => {
           if (err) {
-            console.warn('[Realtime] Subscription warning/error:', err);
+            console.warn('[PauseFlow][Realtime][Pause] Subscription warning/error:', err);
           }
           if (status === 'SUBSCRIBED') {
             this.setStatus('SUBSCRIBED');
-            console.log('[PROFILE REALTIME] SUBSCRIBED');
+            console.log(`[PauseFlow][Realtime][Pause] channel = ${channelName} status = SUBSCRIBED`);
             this.reconnectAttempts = 0;
           } else if (status === 'CHANNEL_ERROR') {
             this.setStatus('CHANNEL_ERROR');
-            console.error('[PROFILE REALTIME] CHANNEL ERROR:', err);
+            console.error(`[PauseFlow][Realtime][Pause] channel = ${channelName} status = CHANNEL_ERROR:`, err);
             this.scheduleReconnect();
           } else if (status === 'TIMED_OUT') {
             this.setStatus('TIMED_OUT');
-            console.warn('[PROFILE REALTIME] TIMED_OUT');
+            console.warn(`[PauseFlow][Realtime][Pause] channel = ${channelName} status = TIMED_OUT`);
             this.scheduleReconnect();
           } else if (status === 'CLOSED') {
             this.setStatus('CLOSED');
-            console.log('[PROFILE REALTIME] CLOSED');
+            console.log(`[PauseFlow][Realtime][Pause] channel = ${channelName} status = CLOSED`);
           }
         });
 
@@ -298,6 +348,61 @@ export class RealtimeSyncService {
   public onReminderEventChange(cb: RealtimeSyncCallback<ReminderEventEntity>): () => void {
     this.reminderEventListeners.add(cb);
     return () => this.reminderEventListeners.delete(cb);
+  }
+
+  public onPauseStateChange(cb: RealtimeSyncCallback<ReminderPauseStateEntity>): () => void {
+    this.pauseStateListeners.add(cb);
+    return () => this.pauseStateListeners.delete(cb);
+  }
+
+  /**
+   * Broadcasts a pause/resume update to all active devices of the authenticated user
+   */
+  public async broadcastPauseState(payload: ReminderPauseStateEntity): Promise<boolean> {
+    if (!payload?.user_id) return false;
+
+    let activeChannel = this.channel;
+    if (!activeChannel || this.currentUserId !== payload.user_id) {
+      console.log(`[PauseFlow][Realtime][Pause] Initializing channel for user ${payload.user_id} before broadcast`);
+      activeChannel = this.subscribe(payload.user_id);
+    }
+
+    if (!activeChannel) {
+      console.warn('[PauseFlow][Realtime][Pause] No active channel available for user:', payload.user_id);
+      return false;
+    }
+
+    // If channel is connecting, wait up to 3.5s for subscription readiness
+    if (this.currentStatus !== 'SUBSCRIBED') {
+      console.log(`[PauseFlow][Realtime][Pause] Channel is in state [${this.currentStatus}], awaiting SUBSCRIBED...`);
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => resolve(), 3500);
+        const check = () => {
+          if (this.currentStatus === 'SUBSCRIBED' || this.currentStatus === 'CHANNEL_ERROR') {
+            clearTimeout(timeout);
+            resolve();
+          }
+        };
+        const unsub = this.onStatusChange(() => {
+          check();
+          unsub();
+        });
+      });
+    }
+
+    try {
+      console.log(`[PauseFlow][Realtime][Pause] Broadcasting pause_state to user_sync_${payload.user_id}:`, payload);
+      const res = await activeChannel.send({
+        type: 'broadcast',
+        event: 'pause_state',
+        payload,
+      });
+      console.log(`[PauseFlow][Realtime][Pause] Broadcast delivery status: ${res}`);
+      return res === 'ok';
+    } catch (err) {
+      console.warn('[PauseFlow][Realtime][Pause] Failed to broadcast pause state:', err);
+      return false;
+    }
   }
 
   public onStatusChange(cb: (status: RealtimeChannelStatus) => void): () => void {

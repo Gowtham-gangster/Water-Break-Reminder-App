@@ -1,5 +1,5 @@
 // src/services/reminderHistoryService.ts
-// EyeFlow V2 — Supabase Reminder History & Statistics Service Bridge
+// PauseFlow V2 — Supabase Reminder History & Statistics Service Bridge
 
 import { reminderService, type UserStatistics, type UserHistoryResponse } from './reminderService.ts';
 import type { ReminderEventEntity } from '../types/index.ts';
@@ -47,6 +47,8 @@ export class ReminderHistoryService {
       type?: 'water' | 'look_outside';
       status?: 'completed' | 'expired' | 'cancelled' | 'triggered';
       range?: 'today' | 'yesterday' | 'this_week' | 'this_month' | 'all' | 'custom';
+      accountCreatedAt?: string | Date;
+      timeZone?: string;
     } = {}
   ): Promise<{ events: ReminderEventEntity[]; total: number; error: string | null }> {
     try {
@@ -59,6 +61,8 @@ export class ReminderHistoryService {
         type: options.type ? (options.type as any) : 'all',
         status: options.status ? (options.status as any) : 'all',
         range: options.range,
+        accountCreatedAt: options.accountCreatedAt,
+        timeZone: options.timeZone,
       });
       return { events: res.events, total: res.total, error: null };
     } catch (err: any) {
@@ -66,31 +70,34 @@ export class ReminderHistoryService {
     }
   }
 
-  public async getUserStatistics(userId: string): Promise<{ stats: UserStatisticsResult; error: string | null }> {
+  public async getUserStatistics(
+    userId: string,
+    configs?: { waterConfig?: any; screenBreakConfig?: any; timeZone?: string; accountCreatedAt?: string | Date }
+  ): Promise<{ stats: UserStatisticsResult; error: string | null }> {
     try {
-      const stats = await reminderService.getStatistics(userId);
+      const stats = await reminderService.getStatistics(userId, configs);
       return { stats, error: null };
     } catch (err: any) {
       return {
         stats: {
-          waterCompleted: 0,
-          waterMissed: 0,
-          screenCompleted: 0,
-          screenMissed: 0,
           dailyCompletionRate: 0,
           weeklyCompletionRate: 0,
           currentStreak: 0,
           bestStreak: 0,
-          totalWaterReminders: 0,
-          totalScreenBreaks: 0,
           monthlyTrends: [],
+          recentFinalizedDays: [],
+          allDailyReports: [],
           today: {
             waterCompleted: 0,
             waterMissed: 0,
             waterScheduled: 0,
+            isWaterActive: false,
+            isWaterFinalized: false,
             screenCompleted: 0,
             screenMissed: 0,
             screenScheduled: 0,
+            isScreenActive: false,
+            isScreenFinalized: false,
           },
         },
         error: err?.message || 'Failed to get statistics',

@@ -139,7 +139,7 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
         onAuthenticated(res.user);
       }
     } catch (err: any) {
-      console.error('[EyeFlow Login Exception]', err);
+      console.error('[PauseFlow Login Exception]', err);
       const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
       setErrorMsg(
         isOffline
@@ -205,7 +205,7 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
         onAuthenticated(res.user);
       }
     } catch (err: any) {
-      console.error('[EyeFlow Sign Up Exception]', err);
+      console.error('[PauseFlow Sign Up Exception]', err);
       const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
       setErrorMsg(
         isOffline
@@ -239,7 +239,7 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
       setSuccessMsg('Password reset link has been sent to your email address.');
       setScreen('login');
     } catch (err: any) {
-      console.error('[EyeFlow Forgot Password Exception]', err);
+      console.error('[PauseFlow Forgot Password Exception]', err);
       const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
       setErrorMsg(
         isOffline
@@ -282,7 +282,7 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
       setConfirmPassword('');
       setScreen('login');
     } catch (err: any) {
-      console.error('[EyeFlow Reset Password Exception]', err);
+      console.error('[PauseFlow Reset Password Exception]', err);
       const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
       setErrorMsg(
         isOffline
@@ -313,7 +313,7 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
         setSuccessMsg('A new verification code has been dispatched to your email.');
       }
     } catch (err: any) {
-      console.error('[EyeFlow Resend Verification Exception]', err);
+      console.error('[PauseFlow Resend Verification Exception]', err);
       const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
       setErrorMsg(
         isOffline
@@ -326,16 +326,13 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
   };
 
   // ==========================================
-  // VIEW: Session Loading State (with auto-fallback)
+  // VIEW: Session Loading State
   // ==========================================
   React.useEffect(() => {
-    if (screen === 'session_loading') {
-      const timer = setTimeout(() => {
-        setScreen('welcome');
-      }, 1500);
-      return () => clearTimeout(timer);
+    if (initialScreen) {
+      setScreen(initialScreen);
     }
-  }, [screen]);
+  }, [initialScreen]);
 
   if (screen === 'session_loading') {
     return (

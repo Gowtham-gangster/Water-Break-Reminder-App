@@ -1,4 +1,4 @@
-// EyeFlow Multiplatform Architecture Layer
+// PauseFlow Multiplatform Architecture Layer
 export * from './types';
 export * from './systemLifecycle';
 export * from './notificationService';

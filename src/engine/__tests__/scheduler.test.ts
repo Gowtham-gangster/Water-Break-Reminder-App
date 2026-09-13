@@ -1,9 +1,9 @@
-// Automated Test Suite for EyeFlow Reminder Engine
+// Automated Test Suite for PauseFlow Reminder Engine
 import { ReminderEngineService } from '../reminderEngine';
 import type { WaterConfig, ScreenBreakConfig, PauseState } from '../../types';
 
 function runTests() {
-  console.log('🧪 Starting EyeFlow Reminder Engine Test Suite...\n');
+  console.log('🧪 Starting PauseFlow Reminder Engine Test Suite...\n');
   let passed = 0;
   let failed = 0;
 

@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { pauseService } from '../services/pauseService';
 import { Pause, Play, X, Clock, Calendar, Sliders } from 'lucide-react';
 import { Button } from './ui';
 
 export const PauseModal: React.FC = () => {
   const { activePauseModalOpen, setActivePauseModalOpen, pauseState, setPauseDuration } =
     useApp();
+
+  const isPaused = pauseService.isRemindersPaused(pauseState, Date.now());
 
   const [customMinutes, setCustomMinutes] = useState<number>(45);
   const [showCustomInput, setShowCustomInput] = useState(false);
@@ -58,7 +61,7 @@ export const PauseModal: React.FC = () => {
           </div>
         </div>
 
-        {pauseState.isPaused && (
+        {isPaused && (
           <div className="p-3.5 rounded-[var(--radius-md)] bg-[var(--warning-subtle)] text-xs text-[var(--warning-primary)] flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Clock className="w-4 h-4" />

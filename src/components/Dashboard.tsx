@@ -114,27 +114,44 @@ export const Dashboard: React.FC = () => {
   const [authoritativeProgress, setAuthoritativeProgress] = useState<{
     waterCompleted: number;
     waterTotal: number;
+    waterMissed: number;
+    isWaterFinalized: boolean;
     screenCompleted: number;
     screenTotal: number;
+    screenMissed: number;
+    isScreenFinalized: boolean;
   }>({
     waterCompleted: waterCompletedCount,
     waterTotal: waterTotalCount,
+    waterMissed: 0,
+    isWaterFinalized: false,
     screenCompleted: screenCompletedCount,
     screenTotal: screenTotalCount,
+    screenMissed: 0,
+    isScreenFinalized: false,
   });
 
   const syncAuthoritativeProgress = useCallback(async () => {
     try {
       const userTz = generalSettings.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-      const progress = await reminderService.getTodayProgress(currentUser?.id, { waterConfig, screenBreakConfig, timeZone: userTz });
+      const progress = await reminderService.getTodayProgress(currentUser?.id, {
+        waterConfig,
+        screenBreakConfig,
+        timeZone: userTz,
+        accountCreatedAt: currentUser?.created_at,
+      });
       setAuthoritativeProgress({
         waterCompleted: progress.water.completed,
         waterTotal: progress.water.expected || waterTotalCount,
+        waterMissed: progress.water.missed,
+        isWaterFinalized: progress.water.isFinalized,
         screenCompleted: progress.lookOutside.completed,
         screenTotal: progress.lookOutside.expected || screenTotalCount,
+        screenMissed: progress.lookOutside.missed,
+        isScreenFinalized: progress.lookOutside.isFinalized,
       });
     } catch (_) {}
-  }, [currentUser?.id, waterConfig, screenBreakConfig, generalSettings.timezone, waterTotalCount, screenTotalCount]);
+  }, [currentUser?.id, currentUser?.created_at, waterConfig, screenBreakConfig, generalSettings.timezone, waterTotalCount, screenTotalCount]);
 
   useEffect(() => {
     syncAuthoritativeProgress();
@@ -479,9 +496,15 @@ export const Dashboard: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Droplets className="w-4 h-4 text-[var(--water-primary)]" />
                 <span className="font-semibold text-[var(--text-primary)]">Water</span>
+                {authoritativeProgress.isWaterFinalized && (
+                  <Badge variant="neutral">Finalized</Badge>
+                )}
               </div>
               <span className="font-mono font-medium text-[var(--text-secondary)]">
                 {effectiveWaterCompleted} / {effectiveWaterTotal} ({waterProgress}%)
+                {authoritativeProgress.isWaterFinalized && authoritativeProgress.waterMissed > 0 && (
+                  <span className="text-rose-400 ml-1.5 font-normal">· {authoritativeProgress.waterMissed} missed</span>
+                )}
               </span>
             </div>
             <ProgressBar value={waterProgress} variant="water" size="md" />
@@ -493,9 +516,15 @@ export const Dashboard: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Eye className="w-4 h-4 text-[var(--screen-primary)]" />
                 <span className="font-semibold text-[var(--text-primary)]">Look Outside</span>
+                {authoritativeProgress.isScreenFinalized && (
+                  <Badge variant="neutral">Finalized</Badge>
+                )}
               </div>
               <span className="font-mono font-medium text-[var(--text-secondary)]">
                 {effectiveScreenCompleted} / {effectiveScreenTotal} ({screenProgress}%)
+                {authoritativeProgress.isScreenFinalized && authoritativeProgress.screenMissed > 0 && (
+                  <span className="text-rose-400 ml-1.5 font-normal">· {authoritativeProgress.screenMissed} missed</span>
+                )}
               </span>
             </div>
             <ProgressBar value={screenProgress} variant="screen" size="md" />

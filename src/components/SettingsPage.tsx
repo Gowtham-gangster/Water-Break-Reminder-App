@@ -5,7 +5,8 @@ import { androidScheduler, type AndroidSchedulerDiagnostics } from '../platform/
 import { detectPlatform } from '../platform/systemLifecycle';
 import { authService } from '../services/authService';
 import { syncService } from '../services/syncService';
-import { Card, Button, Toggle, Badge, useToast } from './ui';
+import { pauseService } from '../services/pauseService';
+import { Card, Button, Toggle, Badge, BrandLogo, useToast } from './ui';
 import { SyncDiagnosticsPanel } from './SyncDiagnosticsPanel';
 import {
   Settings,
@@ -203,7 +204,7 @@ export const SettingsPage: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `eyeflow_settings_${currentUser?.id || 'guest'}_${Date.now()}.json`;
+    a.download = `pauseflow_settings_${currentUser?.id || 'guest'}_${Date.now()}.json`;
     a.click();
     showToast('User settings exported successfully!', 'success');
   };
@@ -630,7 +631,9 @@ export const SettingsPage: React.FC = () => {
           {/* ========================================================
               4. PAUSE REMINDERS SUBTAB
               ======================================================== */}
-          {activeSubTab === 'pause' && (
+          {activeSubTab === 'pause' && (() => {
+            const isPaused = pauseService.isRemindersPaused(pauseState, currentDeviceTimestamp || Date.now());
+            return (
             <Card variant="default" padding="lg" className="space-y-6">
               <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
                 <div>
@@ -641,12 +644,12 @@ export const SettingsPage: React.FC = () => {
                     Temporarily silence all hydration and screen break alerts
                   </p>
                 </div>
-                <Badge variant={pauseState.isPaused ? 'warning' : 'success'}>
-                  {pauseState.isPaused ? 'Paused' : 'Active'}
+                <Badge variant={isPaused ? 'warning' : 'success'}>
+                  {isPaused ? 'Paused' : 'Active'}
                 </Badge>
               </div>
 
-              {pauseState.isPaused && (
+              {isPaused && (
                 <div className="p-4 rounded-[var(--radius-lg)] bg-[var(--warning-subtle)] border border-[var(--warning-border)] text-xs text-[var(--warning-primary)] flex items-center justify-between">
                   <div className="flex items-center gap-2 font-semibold">
                     <Clock className="w-4 h-4" />
@@ -733,11 +736,12 @@ export const SettingsPage: React.FC = () => {
                     >
                       Pause
                     </Button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </Card>
-          )}
+              </Card>
+            );
+          })()}
 
           {/* ========================================================
               5. PRIVACY & ACCOUNT SUBTAB
@@ -985,11 +989,7 @@ export const SettingsPage: React.FC = () => {
               ======================================================== */}
           {activeSubTab === 'about' && (
             <Card variant="default" padding="lg" className="space-y-4 text-center py-8">
-              <img
-                src="/icon.png"
-                alt="PauseFlow"
-                className="w-14 h-14 rounded-2xl object-contain mx-auto shadow-md"
-              />
+              <BrandLogo size="xl" showText={false} className="mx-auto" />
               <div className="space-y-1">
                 <h3 className="text-lg font-bold text-[var(--text-primary)]">PauseFlow</h3>
                 <p className="text-xs text-[var(--text-muted)]">

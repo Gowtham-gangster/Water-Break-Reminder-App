@@ -1,11 +1,11 @@
-// System Lifecycle & Platform Detection for EyeFlow (Windows Desktop Electron, Android Capacitor, Web)
+// System Lifecycle & Platform Detection for PauseFlow (Windows Desktop Electron, Android Capacitor, Web)
 import type { PlatformType, PlatformCapabilities, ISystemLifecycleService } from './types';
 
 export function detectPlatform(): PlatformType {
   if (typeof window === 'undefined') return 'web';
 
   // Windows Desktop (Electron)
-  if ((window as any).eyeflowNative?.isDesktop) {
+  if ((window as any).pauseflowNative?.isDesktop || (window as any).eyeflowNative?.isDesktop) {
     return 'windows';
   }
 

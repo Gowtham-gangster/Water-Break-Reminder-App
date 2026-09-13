@@ -4,6 +4,11 @@ import { notificationService } from '../platform';
 import { reminderService } from '../services/reminderService';
 import { authService } from '../services/authService';
 
+const getDesktopBridge = () =>
+  typeof window !== 'undefined'
+    ? ((window as any).pauseflowNative || (window as any).eyeflowNative)
+    : undefined;
+
 export interface ActiveReminderItem {
   type: 'water' | 'screen';
   category: 'water' | 'screen';
@@ -75,36 +80,9 @@ export const StandaloneReminder: React.FC = () => {
     }
 
     // Complete reminder in native main process immediately
-    if ((window as any).eyeflowNative?.completeReminderItem) {
-      (window as any).eyeflowNative.completeReminderItem(
-        item.type,
-        item.slotId,
-        item.isPreview
-      );
-    }
-  };
-
-  const handleSkipItem = async (item: ActiveReminderItem) => {
-    if (completedSlotsRef.current.has(item.slotId)) return;
-    completedSlotsRef.current.add(item.slotId);
-
-    // Direct event recording in reminderService for 100% data reliability
-    if (!item.isPreview) {
-      try {
-        const user = await authService.getCurrentUser();
-        const userId = user?.id || '';
-        if (userId) {
-          const cat = item.type === 'screen' ? 'look_outside' : item.type;
-          await reminderService.recordExpired(userId, cat, item.slotId);
-        }
-      } catch (err) {
-        console.warn('[StandaloneReminder] Event expiration persistence error:', err);
-      }
-    }
-
-    // Skip reminder in native main process immediately
-    if ((window as any).eyeflowNative?.skipReminderItem) {
-      (window as any).eyeflowNative.skipReminderItem(
+    const desktopBridge = getDesktopBridge();
+    if (desktopBridge?.completeReminderItem) {
+      desktopBridge.completeReminderItem(
         item.type,
         item.slotId,
         item.isPreview
@@ -116,15 +94,16 @@ export const StandaloneReminder: React.FC = () => {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    if ((window as any).eyeflowNative?.getActiveReminders) {
-      (window as any).eyeflowNative.getActiveReminders().then((items: ActiveReminderItem[]) => {
+    const desktopBridge = getDesktopBridge();
+    if (desktopBridge?.getActiveReminders) {
+      desktopBridge.getActiveReminders().then((items: ActiveReminderItem[]) => {
         if (items) {
           setActiveReminders(items);
         }
       });
     }
 
-    const cleanup = (window as any).eyeflowNative?.onActiveRemindersUpdated?.(
+    const cleanup = desktopBridge?.onActiveRemindersUpdated?.(
       (items: ActiveReminderItem[]) => {
         if (items) {
           setActiveReminders(items);
@@ -213,19 +192,6 @@ export const StandaloneReminder: React.FC = () => {
                 ? `Preview closes in ${formattedTime}`
                 : `Take a slow sip • Window closes automatically in ${formattedTime}`}
             </p>
-
-            <div className="pt-1">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleSkipItem(item);
-                }}
-                className="px-4 py-1.5 rounded-full text-xs font-semibold text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-700/80 border border-slate-700/50 transition-colors"
-              >
-                Skip Break
-              </button>
-            </div>
           </div>
         </div>
       );
@@ -298,19 +264,6 @@ export const StandaloneReminder: React.FC = () => {
           <p className="text-[11px] text-slate-400 font-medium">
             Look 20+ feet away • Ends in {formattedTime}
           </p>
-
-          <div className="pt-1">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleSkipItem(item);
-              }}
-              className="px-4 py-1.5 rounded-full text-xs font-semibold text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-700/80 border border-slate-700/50 transition-colors"
-            >
-              Skip Break
-            </button>
-          </div>
         </div>
       </div>
     );

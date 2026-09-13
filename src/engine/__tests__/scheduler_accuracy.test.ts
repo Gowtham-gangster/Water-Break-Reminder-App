@@ -3,7 +3,7 @@ import { ReminderEngineService } from '../reminderEngine';
 import type { WaterConfig, ScreenBreakConfig, PauseState } from '../../types';
 
 function runAccuracyTests() {
-  console.log('🧪 Starting EyeFlow Comprehensive Scheduler Accuracy Test Suite...\n');
+  console.log('🧪 Starting PauseFlow Comprehensive Scheduler Accuracy Test Suite...\n');
   let passed = 0;
   let failed = 0;
 

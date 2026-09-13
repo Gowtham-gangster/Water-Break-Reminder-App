@@ -3,7 +3,7 @@ import { ReminderEngineService } from '../reminderEngine';
 import type { WaterConfig, ScreenBreakConfig, PauseState } from '../../types';
 
 function runDynamicMatrixTests() {
-  console.log('🧪 Starting EyeFlow Dynamic Matrix Test Suite (Arbitrary Timestamps)...\n');
+  console.log('🧪 Starting PauseFlow Dynamic Matrix Test Suite (Arbitrary Timestamps)...\n');
   let passed = 0;
   let failed = 0;
 

@@ -117,7 +117,7 @@ export interface UserAccount {
 }
 
 // ==========================================
-// EYEFLOW V2 — USER-SCOPED ENGINE TYPES
+// PAUSEFLOW V2 — USER-SCOPED ENGINE TYPES
 // ==========================================
 export type UserReminderType = 'water' | 'look_outside';
 export type UserOccurrenceStatus =
@@ -165,7 +165,7 @@ export interface UserScopedScheduleResult {
 }
 
 // ==========================================
-// EYEFLOW V2 — SUPABASE DATABASE ENTITY TYPES
+// PAUSEFLOW V2 — SUPABASE DATABASE ENTITY TYPES
 // ==========================================
 export interface ProfileEntity {
   id: string; // auth.users.id
@@ -235,6 +235,15 @@ export interface DeviceRegistrationEntity {
   device_name: string | null;
   last_sync_at: string;
   created_at: string;
+  updated_at: string;
+}
+
+export interface ReminderPauseStateEntity {
+  user_id: string;
+  paused_until: string | null;
+  paused_at: string | null;
+  paused_by_device_id?: string | null;
+  created_at?: string;
   updated_at: string;
 }
 

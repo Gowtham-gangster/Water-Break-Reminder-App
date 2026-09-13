@@ -10,7 +10,6 @@ export const CombinedBreakModal: React.FC = () => {
     realActiveReminder,
     previewReminder,
     completeRealReminder,
-    skipRealReminder,
     finishPreview,
     waterConfig,
     screenBreakConfig,
@@ -213,23 +212,6 @@ export const CombinedBreakModal: React.FC = () => {
                 <Wind className="w-3.5 h-3.5 text-sky-400 shrink-0" />
                 <span>Blink gently and stretch your neck.</span>
               </div>
-            </div>
-
-            <div className="pt-1 flex items-center justify-center gap-4">
-              <button
-                type="button"
-                onClick={async () => {
-                  if (isReal && realActiveReminder) {
-                    await skipRealReminder('both', realActiveReminder.slotId);
-                  } else {
-                    finishPreview('water');
-                    finishPreview('screen');
-                  }
-                }}
-                className="px-4 py-1.5 rounded-full text-xs font-semibold text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-700/80 border border-slate-700/50 transition-colors"
-              >
-                Skip Breaks
-              </button>
             </div>
           </div>
         )}

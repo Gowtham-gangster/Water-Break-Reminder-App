@@ -9,7 +9,6 @@ export const BreakModal: React.FC = () => {
     realActiveReminder,
     previewReminder,
     completeRealReminder,
-    skipRealReminder,
     finishPreview,
     screenBreakConfig,
   } = useApp();
@@ -38,14 +37,6 @@ export const BreakModal: React.FC = () => {
   const [isCompleted, setIsCompleted] = useState(false);
 
   const hasCompletedRef = useRef<boolean>(false);
-
-  const handleSkip = async () => {
-    if (isReal && realActiveReminder) {
-      await skipRealReminder('screen', realActiveReminder.slotId);
-    } else {
-      finishPreview('screen');
-    }
-  };
 
   useEffect(() => {
     if (!activeBreakModalOpen || (!isReal && !isPreview)) return;
@@ -174,16 +165,6 @@ export const BreakModal: React.FC = () => {
             <p className="text-xs text-[var(--text-muted)] font-medium">
               Relax and blink gently. Window closes automatically when complete.
             </p>
-
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={handleSkip}
-                className="px-4 py-1.5 rounded-full text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-subtle)] hover:bg-[var(--bg-surface-hover)] border border-[var(--border-subtle)] transition-colors"
-              >
-                Skip Break
-              </button>
-            </div>
           </div>
         )}
       </div>

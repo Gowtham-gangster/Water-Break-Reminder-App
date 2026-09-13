@@ -1,5 +1,5 @@
 // src/services/reminderService.ts
-// EyeFlow V2 — Authoritative Reminder Lifecycle, Database Sync, Statistics & History Service
+// PauseFlow V2 — Authoritative Reminder Lifecycle, Database Sync, Statistics & History Service
 
 import { supabase } from './supabaseClient.ts';
 import { authService } from './authService.ts';
@@ -14,32 +14,62 @@ export interface LocalReminderEvent extends ReminderEventEntity {
   sync_status?: 'synced' | 'pending' | 'failed';
 }
 
-export interface UserStatistics {
+export interface DailyReportItem {
+  date: string;
+  isToday: boolean;
+  isActive: boolean;
+  isFinalized: boolean;
   waterCompleted: number;
+  waterExpected: number;
   waterMissed: number;
   screenCompleted: number;
+  screenExpected: number;
   screenMissed: number;
+}
+
+export interface UserStatistics {
   dailyCompletionRate: number;
   weeklyCompletionRate: number;
   currentStreak: number;
   bestStreak: number;
-  totalWaterReminders: number;
-  totalScreenBreaks: number;
   monthlyTrends: Array<{
     date: string;
     waterCompleted: number;
-    waterMissed: number;
     screenCompleted: number;
-    screenMissed: number;
     completionRate: number;
   }>;
+  recentFinalizedDays: DailyReportItem[];
+  allDailyReports: DailyReportItem[];
   today: {
     waterCompleted: number;
     waterMissed: number;
     waterScheduled: number;
+    isWaterActive: boolean;
+    isWaterFinalized: boolean;
     screenCompleted: number;
     screenMissed: number;
     screenScheduled: number;
+    isScreenActive: boolean;
+    isScreenFinalized: boolean;
+  };
+}
+
+export interface TodayProgress {
+  water: {
+    completed: number;
+    expected: number;
+    missed: number;
+    isActive: boolean;
+    isFinalized: boolean;
+    progressPercentage: number;
+  };
+  lookOutside: {
+    completed: number;
+    expected: number;
+    missed: number;
+    isActive: boolean;
+    isFinalized: boolean;
+    progressPercentage: number;
   };
 }
 
@@ -97,7 +127,49 @@ export function getLocalDateString(date: Date | string | number = new Date(), ti
 }
 
 /**
+ * Returns the minute of the day (0..1439) for a given ISO timestamp in a specified timezone.
+ */
+export function getAccountCreatedMinuteOfDay(accountCreatedAt: string | Date, tz: string = 'UTC'): number {
+  try {
+    const createdDate = new Date(accountCreatedAt);
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(createdDate);
+    const h = parseInt(parts.find((p) => p.type === 'hour')?.value || '0', 10);
+    const m = parseInt(parts.find((p) => p.type === 'minute')?.value || '0', 10);
+    return (isNaN(h) ? 0 : h) * 60 + (isNaN(m) ? 0 : m);
+  } catch (_) {
+    const d = new Date(accountCreatedAt);
+    return d.getHours() * 60 + d.getMinutes();
+  }
+}
+
+/**
+ * Checks if a target date string or Date is on or after the account creation date in a given timezone.
+ */
+export function isDateOnOrAfterAccountCreation(
+  targetDate: string | Date,
+  accountCreatedAt?: string | Date,
+  tz: string = 'UTC'
+): boolean {
+  if (!accountCreatedAt) return true;
+  const targetIsoDate =
+    typeof targetDate === 'string' && targetDate.length === 10 && targetDate.includes('-')
+      ? targetDate
+      : getLocalDateString(new Date(targetDate), tz);
+  const createdIsoDate = getLocalDateString(new Date(accountCreatedAt), tz);
+  return targetIsoDate >= createdIsoDate;
+}
+
+/**
  * Authoritative expected reminder count calculation shared across Web, Windows, and Android
+ * Strictly respects the user's account creation date:
+ * - Pre-account dates return 0
+ * - On account creation day, only counts slots on or after the account creation time
  */
 export function calculateAuthoritativeExpected(
   cfg?: {
@@ -112,11 +184,31 @@ export function calculateAuthoritativeExpected(
     quietEndTime?: string;
   },
   targetDate: Date = new Date(),
-  defaultInterval: number = 45
+  defaultInterval: number = 45,
+  accountCreatedAt?: string | Date,
+  timeZone?: string
 ): number {
   if (!cfg || !cfg.enabled) return 0;
+  const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata';
+
+  if (accountCreatedAt) {
+    const targetDateStr = getLocalDateString(targetDate, tz);
+    const createdDateStr = getLocalDateString(new Date(accountCreatedAt), tz);
+    // Pre-account calendar days have 0 expected reminders
+    if (targetDateStr < createdDateStr) {
+      return 0;
+    }
+  }
+
   const activeDays = cfg.activeDays && cfg.activeDays.length > 0 ? cfg.activeDays : [0, 1, 2, 3, 4, 5, 6];
-  if (!activeDays.includes(targetDate.getDay())) return 0;
+  let targetDayOfWeek = targetDate.getDay();
+  try {
+    const dayFormatter = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' });
+    const dayStr = dayFormatter.format(targetDate);
+    const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    if (dayMap[dayStr] !== undefined) targetDayOfWeek = dayMap[dayStr];
+  } catch (_) {}
+  if (!activeDays.includes(targetDayOfWeek)) return 0;
 
   const interval = Math.max(1, cfg.intervalMinutes || cfg.screenIntervalMinutes || defaultInterval);
   const [sh, sm] = (cfg.startTime || '09:00').split(':').map(Number);
@@ -125,6 +217,18 @@ export function calculateAuthoritativeExpected(
   const endM = (isNaN(eh) ? 18 : eh) * 60 + (isNaN(em) ? 0 : em);
 
   if (endM < startM) return 0;
+
+  // Account creation day partial window calculation:
+  // effectiveEarliestMinute = max(scheduleStart, accountCreatedAtLocalTime)
+  let effectiveEarliestMinute = startM;
+  if (accountCreatedAt) {
+    const targetDateStr = getLocalDateString(targetDate, tz);
+    const createdDateStr = getLocalDateString(new Date(accountCreatedAt), tz);
+    if (targetDateStr === createdDateStr) {
+      const createdMin = getAccountCreatedMinuteOfDay(accountCreatedAt, tz);
+      effectiveEarliestMinute = Math.max(startM, createdMin);
+    }
+  }
 
   let quietStart = -1;
   let quietEnd = -1;
@@ -137,6 +241,9 @@ export function calculateAuthoritativeExpected(
 
   let count = 0;
   for (let m = startM; m <= endM; m += interval) {
+    // Only count reminder slots that fall within the user's account lifetime
+    if (m < effectiveEarliestMinute) continue;
+
     if (quietStart !== -1 && quietEnd !== -1) {
       if (quietStart <= quietEnd && m >= quietStart && m <= quietEnd) continue;
       if (quietStart > quietEnd && (m >= quietStart || m <= quietEnd)) continue;
@@ -144,6 +251,57 @@ export function calculateAuthoritativeExpected(
     count++;
   }
   return count;
+}
+
+/**
+ * Checks if the reminder schedule window is currently active for a given date in the user's timezone.
+ * Returns true ONLY while the local time is within today's active schedule window (<= endTime).
+ */
+export function isScheduleWindowActive(
+  cfg?: {
+    enabled?: boolean;
+    startTime?: string;
+    endTime?: string;
+    activeDays?: number[];
+  },
+  targetDate: Date = new Date(),
+  now: Date = new Date(),
+  timeZone?: string
+): boolean {
+  if (!cfg || !cfg.enabled) return false;
+  const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const targetDateStr = getLocalDateString(targetDate, tz);
+  const nowDateStr = getLocalDateString(now, tz);
+
+  // Past dates are finished/finalized (not active)
+  if (targetDateStr < nowDateStr) return false;
+  // Future dates are not active yet
+  if (targetDateStr > nowDateStr) return false;
+
+  // For today: check active days
+  const activeDays = cfg.activeDays && cfg.activeDays.length > 0 ? cfg.activeDays : [0, 1, 2, 3, 4, 5, 6];
+  if (!activeDays.includes(targetDate.getDay())) return false;
+
+  const [eh, em] = (cfg.endTime || '18:00').split(':').map(Number);
+  const endMinutes = (isNaN(eh) ? 18 : eh) * 60 + (isNaN(em) ? 0 : em);
+
+  // Get current local time in target timezone
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(now);
+    const curHour = Number(parts.find((p) => p.type === 'hour')?.value ?? now.getHours());
+    const curMin = Number(parts.find((p) => p.type === 'minute')?.value ?? now.getMinutes());
+    const currentMinutes = curHour * 60 + curMin;
+    return currentMinutes <= endMinutes;
+  } catch (_) {
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    return currentMinutes <= endMinutes;
+  }
 }
 
 // Convert slot string (e.g. "water:2026-09-12:17:00", "10:00", or ISO) to ISO scheduled_at
@@ -194,19 +352,6 @@ export function parseSlotToISO(slotIdOrTime: string | number, baseDate: Date = n
 
 export type ReminderEventListener = (event: LocalReminderEvent) => void;
 
-export interface TodayProgress {
-  water: {
-    completed: number;
-    expected: number;
-    progressPercentage: number;
-  };
-  lookOutside: {
-    completed: number;
-    expected: number;
-    progressPercentage: number;
-  };
-}
-
 class ReminderService {
   private listeners: Set<ReminderEventListener> = new Set();
 
@@ -229,15 +374,15 @@ class ReminderService {
 
   // Key generators for user-scoped local storage
   private getEventsStorageKey(userId: string): string {
-    return `eyeflow:v2:${userId}:reminder_events`;
+    return `pauseflow:v2:${userId}:reminder_events`;
   }
 
   private getOfflineQueueStorageKey(userId: string): string {
-    return `eyeflow:v2:${userId}:offline_reminder_events`;
+    return `pauseflow:v2:${userId}:offline_reminder_events`;
   }
 
   private getSlotUUIDMapKey(userId: string): string {
-    return `eyeflow:v2:${userId}:slot_uuid_map`;
+    return `pauseflow:v2:${userId}:slot_uuid_map`;
   }
 
   private memoryStore: Map<string, string> = new Map();
@@ -245,7 +390,16 @@ class ReminderService {
   private getStorageItem(key: string): string | null {
     if (typeof localStorage !== 'undefined') {
       try {
-        return localStorage.getItem(key);
+        let val = localStorage.getItem(key);
+        if (val === null) {
+          const legacyKey = key.replace('pauseflow:', 'eyeflow:');
+          const legacyVal = localStorage.getItem(legacyKey);
+          if (legacyVal !== null) {
+            val = legacyVal;
+            localStorage.setItem(key, val);
+          }
+        }
+        return val;
       } catch (_) {}
     }
     return this.memoryStore.get(key) || null;
@@ -259,6 +413,36 @@ class ReminderService {
       } catch (_) {}
     }
     this.memoryStore.set(key, value);
+  }
+
+  /**
+   * Completely clear in-memory and local caches for a specific user upon logout
+   */
+  public clearUserCache(userId: string): void {
+    if (!userId) return;
+    const prefixes = [`pauseflow:v2:${userId}:`, `eyeflow:v2:${userId}:`];
+    if (typeof localStorage !== 'undefined') {
+      try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const key = localStorage.key(i);
+          if (key && prefixes.some((p) => key.startsWith(p))) {
+            localStorage.removeItem(key);
+          }
+        }
+      } catch (_) {}
+    }
+    for (const key of Array.from(this.memoryStore.keys())) {
+      if (prefixes.some((p) => key.startsWith(p))) {
+        this.memoryStore.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Clear all transient memory storage
+   */
+  public clearAllMemoryCache(): void {
+    this.memoryStore.clear();
   }
 
   /**
@@ -375,11 +559,26 @@ class ReminderService {
     let localEvent: LocalReminderEvent;
 
     if (existingIndex >= 0) {
+      const existing = currentEvents[existingIndex];
+      // Once completed, status is permanent and cannot be downgraded to triggered/scheduled/cancelled
+      const finalStatus =
+        existing.status === 'completed' && eventData.status !== 'completed'
+          ? 'completed'
+          : eventData.status;
+
+      const finalCompletedAt =
+        existing.completed_at ||
+        eventData.completed_at ||
+        (finalStatus === 'completed' ? nowIso : null);
+
       localEvent = {
-        ...currentEvents[existingIndex],
-        status: eventData.status,
-        started_at: eventData.started_at !== undefined ? eventData.started_at : currentEvents[existingIndex].started_at,
-        completed_at: eventData.completed_at !== undefined ? eventData.completed_at : currentEvents[existingIndex].completed_at,
+        ...existing,
+        status: finalStatus,
+        started_at:
+          eventData.started_at !== undefined
+            ? eventData.started_at
+            : existing.started_at,
+        completed_at: finalCompletedAt,
         updated_at: nowIso,
         sync_status: 'pending',
       };
@@ -390,8 +589,13 @@ class ReminderService {
         user_id: userId,
         type: normalizedType,
         scheduled_at: scheduledAt,
-        started_at: eventData.started_at || (eventData.status === 'triggered' || eventData.status === 'scheduled' ? nowIso : null),
-        completed_at: eventData.completed_at || (eventData.status === 'completed' ? nowIso : null),
+        started_at:
+          eventData.started_at ||
+          (eventData.status === 'triggered' || eventData.status === 'scheduled'
+            ? nowIso
+            : null),
+        completed_at:
+          eventData.completed_at || (eventData.status === 'completed' ? nowIso : null),
         status: eventData.status,
         created_at: nowIso,
         updated_at: nowIso,
@@ -430,6 +634,8 @@ class ReminderService {
 
     // 6. Notify all reactive subscribers immediately
     this.notifyListeners(localEvent);
+
+    console.log(`[PauseFlow][TRACE] stage=SERVICE_COMPLETED eventId=${eventId} slotId=${slotKey} status=${localEvent.status}`);
 
     return localEvent;
   }
@@ -470,7 +676,7 @@ class ReminderService {
       console.log('[ReminderService] Upserting event to Supabase reminder_events:', payload);
 
       const writeStart = performance.now();
-      const { data, error } = await supabase.from('reminder_events').upsert(payload as any, { onConflict: 'id' }).select();
+      const { error } = await supabase.from('reminder_events').upsert(payload as any, { onConflict: 'id' });
       const elapsed = performanceDiagnostics.recordWriteEnd(event.id) || Math.round(performance.now() - writeStart);
 
       if (error) {
@@ -483,7 +689,7 @@ class ReminderService {
         return false;
       }
 
-      console.log(`[ReminderService] Supabase reminder_events upsert SUCCESS in ${elapsed}ms:`, data);
+      console.log(`[PauseFlow][TRACE] stage=SUPABASE_SYNCED eventId=${event.id} status=${event.status} elapsedMs=${elapsed}`);
 
       // Mark event as synced locally
       const localEvents = this.getLocalEvents(activeUserId);
@@ -568,6 +774,19 @@ class ReminderService {
       completed_at: nowIso,
       status: 'completed',
     });
+  }
+
+  /**
+   * Record a scheduled reminder notification delivery as an immediate completion
+   */
+  public async recordDelivered(
+    userId: string,
+    type: 'water' | 'look_outside' | 'screen',
+    slotIdOrTime: string | number,
+    scheduledAt?: string,
+    deliveredAt?: string
+  ): Promise<LocalReminderEvent> {
+    return this.recordCompleted(userId, type, slotIdOrTime, scheduledAt, deliveredAt);
   }
 
   public async recordExpired(
@@ -795,26 +1014,38 @@ class ReminderService {
 
   /**
    * Get all reminder events for today's local date (timezone aware)
+   * Strictly filters out any events before account creation
    */
-  public async getTodayEvents(userId: string, timeZone?: string): Promise<ReminderEventEntity[]> {
+  public async getTodayEvents(userId: string, timeZone?: string, accountCreatedAt?: string | Date): Promise<ReminderEventEntity[]> {
     if (!userId) return [];
     const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata';
     const todayLocal = getLocalDateString(new Date(), tz);
+    const createdLocal = accountCreatedAt ? getLocalDateString(new Date(accountCreatedAt), tz) : undefined;
 
     // 1. Get from local cache
     const local = this.getLocalEvents(userId);
     const localToday = local.filter((e) => {
+      if (accountCreatedAt && new Date(e.completed_at || e.scheduled_at || e.created_at).getTime() < new Date(accountCreatedAt).getTime()) {
+        return false;
+      }
       const dateKey = getLocalDateString(new Date(e.completed_at || e.scheduled_at || e.created_at), tz);
+      if (createdLocal && dateKey < createdLocal) return false;
       return dateKey === todayLocal;
     });
 
     // 2. If online, fetch recent events and merge with Supabase
     if (typeof navigator !== 'undefined' && navigator.onLine) {
       try {
-        const { data, error } = await supabase
+        let query = supabase
           .from('reminder_events')
           .select('*')
-          .eq('user_id', userId)
+          .eq('user_id', userId);
+
+        if (accountCreatedAt) {
+          query = query.gte('scheduled_at', typeof accountCreatedAt === 'string' ? accountCreatedAt : accountCreatedAt.toISOString());
+        }
+
+        const { data, error } = await query
           .order('scheduled_at', { ascending: false })
           .limit(300);
 
@@ -824,7 +1055,11 @@ class ReminderService {
           this.saveLocalEvents(userId, merged);
 
           return merged.filter((e) => {
+            if (accountCreatedAt && new Date(e.completed_at || e.scheduled_at || e.created_at).getTime() < new Date(accountCreatedAt).getTime()) {
+              return false;
+            }
             const dateKey = getLocalDateString(new Date(e.completed_at || e.scheduled_at || e.created_at), tz);
+            if (createdLocal && dateKey < createdLocal) return false;
             return dateKey === todayLocal;
           });
         } else if (error) {
@@ -840,35 +1075,45 @@ class ReminderService {
 
   /**
    * Comprehensive user statistics calculated from real reminder events (100% Shared Business Logic)
+   * Strictly enforces the user's account creation date as the absolute lower boundary for:
+   * - Today's Progress (partial creation day slot semantics)
+   * - Recent Daily Summary (only valid finalized days since creation)
+   * - Daily Activity (at most 7 days, strictly on or after creation)
+   * - Daily Report (max(reportStartDate, accountCreationLocalDate) through today)
+   * - Current/Best Streaks & Rates (no penalties for pre-account days)
    */
   public async getStatistics(
     userId?: string,
-    configs?: { waterConfig?: WaterConfig; screenBreakConfig?: ScreenBreakConfig; timeZone?: string }
+    configs?: { waterConfig?: WaterConfig; screenBreakConfig?: ScreenBreakConfig; timeZone?: string; accountCreatedAt?: string | Date }
   ): Promise<UserStatistics> {
     let currentUserId = userId;
-    if (!currentUserId) {
+    let accountCreatedAt = configs?.accountCreatedAt;
+
+    if (!currentUserId || !accountCreatedAt) {
       const user = await authService.getCurrentUser();
-      currentUserId = user?.id;
+      if (!currentUserId) currentUserId = user?.id;
+      if (!accountCreatedAt && user?.created_at) accountCreatedAt = user.created_at;
     }
+
     const defaultStats: UserStatistics = {
-      waterCompleted: 0,
-      waterMissed: 0,
-      screenCompleted: 0,
-      screenMissed: 0,
       dailyCompletionRate: 0,
       weeklyCompletionRate: 0,
       currentStreak: 0,
       bestStreak: 0,
-      totalWaterReminders: 0,
-      totalScreenBreaks: 0,
       monthlyTrends: [],
+      recentFinalizedDays: [],
+      allDailyReports: [],
       today: {
         waterCompleted: 0,
         waterMissed: 0,
         waterScheduled: 0,
+        isWaterActive: false,
+        isWaterFinalized: false,
         screenCompleted: 0,
         screenMissed: 0,
         screenScheduled: 0,
+        isScreenActive: false,
+        isScreenFinalized: false,
       },
     };
 
@@ -877,16 +1122,26 @@ class ReminderService {
     const tz = configs?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata';
     const now = new Date();
     const todayLocal = getLocalDateString(now, tz);
+    const createdDateObj = accountCreatedAt ? new Date(accountCreatedAt) : undefined;
+    const createdLocal = createdDateObj ? getLocalDateString(createdDateObj, tz) : undefined;
+    const createdTimeMs = createdDateObj ? createdDateObj.getTime() : 0;
 
     // 1. Fetch all events for user from Supabase or local cache
     let events: ReminderEventEntity[] = this.getLocalEvents(currentUserId);
 
     if (typeof navigator !== 'undefined' && navigator.onLine) {
       try {
-        const { data, error } = await supabase
+        let query = supabase
           .from('reminder_events')
           .select('*')
-          .eq('user_id', currentUserId)
+          .eq('user_id', currentUserId);
+
+        if (accountCreatedAt) {
+          const iso = typeof accountCreatedAt === 'string' ? accountCreatedAt : accountCreatedAt.toISOString();
+          query = query.gte('scheduled_at', iso);
+        }
+
+        const { data, error } = await query
           .order('scheduled_at', { ascending: false })
           .limit(2000);
 
@@ -900,24 +1155,34 @@ class ReminderService {
       }
     }
 
+    // Filter out any events before account creation timestamp
+    if (accountCreatedAt) {
+      events = events.filter((ev) => {
+        const evTime = new Date(ev.scheduled_at || ev.completed_at || ev.created_at).getTime();
+        if (evTime < createdTimeMs) return false;
+        const evDate = getLocalDateString(new Date(evTime), tz);
+        if (createdLocal && evDate < createdLocal) return false;
+        return true;
+      });
+    }
+
     let waterCompleted = 0;
-    let waterMissed = 0;
     let screenCompleted = 0;
-    let screenMissed = 0;
     let todayWaterCompleted = 0;
-    let todayWaterMissed = 0;
     let todayScreenCompleted = 0;
-    let todayScreenMissed = 0;
 
     // Daily breakdown for streak and trends (keyed by local YYYY-MM-DD in user's timezone)
-    const dailyMap = new Map<string, { waterCompleted: number; waterMissed: number; screenCompleted: number; screenMissed: number }>();
+    const dailyMap = new Map<string, { waterCompleted: number; screenCompleted: number }>();
 
     for (const ev of events) {
       const eventDate = getLocalDateString(new Date(ev.completed_at || ev.scheduled_at || ev.created_at), tz);
+      // Strictly ignore events before account creation date
+      if (createdLocal && eventDate < createdLocal) continue;
+
       const isToday = eventDate === todayLocal;
 
       if (!dailyMap.has(eventDate)) {
-        dailyMap.set(eventDate, { waterCompleted: 0, waterMissed: 0, screenCompleted: 0, screenMissed: 0 });
+        dailyMap.set(eventDate, { waterCompleted: 0, screenCompleted: 0 });
       }
       const dayData = dailyMap.get(eventDate)!;
 
@@ -926,27 +1191,34 @@ class ReminderService {
           waterCompleted++;
           dayData.waterCompleted++;
           if (isToday) todayWaterCompleted++;
-        } else if (ev.status === 'expired' || ev.status === 'cancelled') {
-          waterMissed++;
-          dayData.waterMissed++;
-          if (isToday) todayWaterMissed++;
         }
       } else if (ev.type === 'look_outside' || (ev.type as any) === 'screen') {
         if (ev.status === 'completed') {
           screenCompleted++;
           dayData.screenCompleted++;
           if (isToday) todayScreenCompleted++;
-        } else if (ev.status === 'expired' || ev.status === 'cancelled') {
-          screenMissed++;
-          dayData.screenMissed++;
-          if (isToday) todayScreenMissed++;
         }
       }
     }
 
-    // Expected daily targets calculated authoritatively from schedule configs & active days
-    const expectedWaterToday = calculateAuthoritativeExpected(configs?.waterConfig, now, 45);
-    const expectedScreenToday = calculateAuthoritativeExpected(configs?.screenBreakConfig, now, 20);
+    // Expected daily targets calculated dynamically from schedule configs & active days (respecting account creation)
+    const expectedWaterToday = calculateAuthoritativeExpected(configs?.waterConfig, now, 45, accountCreatedAt, tz);
+    const expectedScreenToday = calculateAuthoritativeExpected(configs?.screenBreakConfig, now, 20, accountCreatedAt, tz);
+
+    const isWaterActiveToday = isScheduleWindowActive(configs?.waterConfig, now, now, tz);
+    const isScreenActiveToday = isScheduleWindowActive(configs?.screenBreakConfig, now, now, tz);
+
+    const isWaterFinalizedToday = !isWaterActiveToday;
+    const isScreenFinalizedToday = !isScreenActiveToday;
+
+    // TODAY MISSED: 0 while active schedule window is in progress; Max(0, Expected - Completed) after end time
+    const todayWaterMissed = isWaterActiveToday
+      ? 0
+      : Math.max(0, expectedWaterToday - todayWaterCompleted);
+
+    const todayScreenMissed = isScreenActiveToday
+      ? 0
+      : Math.max(0, expectedScreenToday - todayScreenCompleted);
 
     const totalTodayExpected = expectedWaterToday + expectedScreenToday;
     const totalTodayCompleted = todayWaterCompleted + todayScreenCompleted;
@@ -958,12 +1230,14 @@ class ReminderService {
         ? 100
         : 0;
 
-    // Calculate Streak (consecutive days with at least 1 completed reminder)
+    // Calculate Streak (consecutive days with completed reminders strictly within account lifetime)
     let bestStreak = 0;
     let tempStreak = 0;
 
-    // Sort days chronologically
-    const sortedDays = Array.from(dailyMap.keys()).sort();
+    // Sort days chronologically (only days >= createdLocal)
+    const sortedDays = Array.from(dailyMap.keys())
+      .filter((k) => !createdLocal || k >= createdLocal)
+      .sort();
 
     for (let i = 0; i < sortedDays.length; i++) {
       const dayKey = sortedDays[i];
@@ -976,20 +1250,25 @@ class ReminderService {
       }
     }
 
-    // Calculate current streak backwards from today or yesterday
+    // Calculate current streak backwards from today down to createdLocal (never penalize pre-account days)
     let checkDate = new Date(now);
     let streakCount = 0;
 
     while (true) {
       const dKey = getLocalDateString(checkDate, tz);
+      // History starts strictly at account creation
+      if (createdLocal && dKey < createdLocal) break;
+
       const data = dailyMap.get(dKey);
       if (data && (data.waterCompleted > 0 || data.screenCompleted > 0)) {
         streakCount++;
         checkDate.setDate(checkDate.getDate() - 1);
       } else if (dKey === todayLocal) {
-        // If today has 0 completions yet, check if yesterday maintained a streak
+        // If today has 0 completions yet but is still active, check yesterday to preserve streak
         checkDate.setDate(checkDate.getDate() - 1);
-        const yData = dailyMap.get(getLocalDateString(checkDate, tz));
+        const prevKey = getLocalDateString(checkDate, tz);
+        if (createdLocal && prevKey < createdLocal) break;
+        const yData = dailyMap.get(prevKey);
         if (yData && (yData.waterCompleted > 0 || yData.screenCompleted > 0)) {
           continue;
         }
@@ -1001,20 +1280,22 @@ class ReminderService {
     const currentStreak = streakCount;
     if (currentStreak > bestStreak) bestStreak = currentStreak;
 
-    // Calculate last 7 days weekly rate with per-day expected calculation
+    // Calculate weekly rate for valid account-lifetime days (at most 7 days rolling)
     let weeklyCompleted = 0;
     let weeklyTarget = 0;
     for (let i = 0; i < 7; i++) {
       const d = new Date(now);
       d.setDate(d.getDate() - i);
       const dKey = getLocalDateString(d, tz);
+      if (createdLocal && dKey < createdLocal) break;
+
       const dData = dailyMap.get(dKey);
       if (dData) {
         weeklyCompleted += dData.waterCompleted + dData.screenCompleted;
       }
       weeklyTarget +=
-        calculateAuthoritativeExpected(configs?.waterConfig, d, 45) +
-        calculateAuthoritativeExpected(configs?.screenBreakConfig, d, 20);
+        calculateAuthoritativeExpected(configs?.waterConfig, d, 45, accountCreatedAt, tz) +
+        calculateAuthoritativeExpected(configs?.screenBreakConfig, d, 20, accountCreatedAt, tz);
     }
     const weeklyCompletionRate =
       weeklyTarget > 0
@@ -1023,23 +1304,32 @@ class ReminderService {
         ? 100
         : 0;
 
-    // Monthly trends (past 30 days)
+    // Daily Activity trends: at most 7 days, strictly on or after account creation (no fake zero padding)
     const monthlyTrends: UserStatistics['monthlyTrends'] = [];
-    for (let i = 29; i >= 0; i--) {
+    const maxTrendDays = 7;
+    const trendDates: Date[] = [];
+
+    for (let i = maxTrendDays - 1; i >= 0; i--) {
       const d = new Date(now);
       d.setDate(d.getDate() - i);
       const dKey = getLocalDateString(d, tz);
-      const dData = dailyMap.get(dKey) || { waterCompleted: 0, waterMissed: 0, screenCompleted: 0, screenMissed: 0 };
+      if (createdLocal && dKey < createdLocal) continue;
+      trendDates.push(d);
+    }
+
+    for (const d of trendDates) {
+      const dKey = getLocalDateString(d, tz);
+      const dData = dailyMap.get(dKey) || { waterCompleted: 0, screenCompleted: 0 };
+
+      const dayWaterExp = calculateAuthoritativeExpected(configs?.waterConfig, d, 45, accountCreatedAt, tz);
+      const dayScreenExp = calculateAuthoritativeExpected(configs?.screenBreakConfig, d, 20, accountCreatedAt, tz);
       const dayTotal = dData.waterCompleted + dData.screenCompleted;
-      const dayExpected =
-        calculateAuthoritativeExpected(configs?.waterConfig, d, 45) +
-        calculateAuthoritativeExpected(configs?.screenBreakConfig, d, 20);
+      const dayExpected = dayWaterExp + dayScreenExp;
+
       monthlyTrends.push({
         date: dKey,
         waterCompleted: dData.waterCompleted,
-        waterMissed: dData.waterMissed,
         screenCompleted: dData.screenCompleted,
-        screenMissed: dData.screenMissed,
         completionRate:
           dayExpected > 0
             ? Math.min(100, Math.round((dayTotal / dayExpected) * 100))
@@ -1049,25 +1339,88 @@ class ReminderService {
       });
     }
 
+    // Collect all historical day keys from dailyMap + past 30 days strictly within account lifetime
+    const allKnownDayKeys = new Set<string>();
+    if (createdLocal) {
+      for (const k of dailyMap.keys()) {
+        if (k >= createdLocal) allKnownDayKeys.add(k);
+      }
+      for (let i = 0; i < 30; i++) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - i);
+        const dKey = getLocalDateString(d, tz);
+        if (dKey < createdLocal) break;
+        allKnownDayKeys.add(dKey);
+      }
+    } else {
+      for (const k of dailyMap.keys()) allKnownDayKeys.add(k);
+      for (let i = 0; i < 30; i++) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - i);
+        allKnownDayKeys.add(getLocalDateString(d, tz));
+      }
+    }
+
+    const sortedDayKeysDesc = Array.from(allKnownDayKeys).sort().reverse();
+    const allDailyReports: DailyReportItem[] = [];
+    const recentFinalizedDays: DailyReportItem[] = [];
+
+    for (const dKey of sortedDayKeysDesc) {
+      const isDayToday = dKey === todayLocal;
+      const dData = dailyMap.get(dKey) || { waterCompleted: 0, screenCompleted: 0 };
+      const dParts = dKey.split('-').map(Number);
+      const dayDate = new Date(dParts[0], (dParts[1] || 1) - 1, dParts[2] || 1);
+
+      const dayWaterExp = calculateAuthoritativeExpected(configs?.waterConfig, dayDate, 45, accountCreatedAt, tz);
+      const dayScreenExp = calculateAuthoritativeExpected(configs?.screenBreakConfig, dayDate, 20, accountCreatedAt, tz);
+
+      const isWaterActive = isDayToday ? isWaterActiveToday : false;
+      const isScreenActive = isDayToday ? isScreenActiveToday : false;
+      const isActive = isWaterActive || isScreenActive;
+      const isFinalized = !isActive;
+
+      const dayWaterMissed = isFinalized ? Math.max(0, dayWaterExp - dData.waterCompleted) : 0;
+      const dayScreenMissed = isFinalized ? Math.max(0, dayScreenExp - dData.screenCompleted) : 0;
+
+      const reportItem: DailyReportItem = {
+        date: dKey,
+        isToday: isDayToday,
+        isActive,
+        isFinalized,
+        waterCompleted: dData.waterCompleted,
+        waterExpected: dayWaterExp,
+        waterMissed: dayWaterMissed,
+        screenCompleted: dData.screenCompleted,
+        screenExpected: dayScreenExp,
+        screenMissed: dayScreenMissed,
+      };
+
+      allDailyReports.push(reportItem);
+
+      if (isFinalized && recentFinalizedDays.length < 2) {
+        recentFinalizedDays.push(reportItem);
+      }
+    }
+
     return {
-      waterCompleted,
-      waterMissed,
-      screenCompleted,
-      screenMissed,
       dailyCompletionRate,
       weeklyCompletionRate,
       currentStreak,
       bestStreak,
-      totalWaterReminders: events.filter((e) => e.type === 'water').length,
-      totalScreenBreaks: events.filter((e) => e.type === 'look_outside' || (e.type as any) === 'screen').length,
       monthlyTrends,
+      recentFinalizedDays,
+      allDailyReports,
       today: {
         waterCompleted: todayWaterCompleted,
         waterMissed: todayWaterMissed,
         waterScheduled: expectedWaterToday,
+        isWaterActive: isWaterActiveToday,
+        isWaterFinalized: isWaterFinalizedToday,
         screenCompleted: todayScreenCompleted,
         screenMissed: todayScreenMissed,
         screenScheduled: expectedScreenToday,
+        isScreenActive: isScreenActiveToday,
+        isScreenFinalized: isScreenFinalizedToday,
       },
     };
   }
@@ -1077,23 +1430,36 @@ class ReminderService {
    */
   public async getTodayProgress(
     userId?: string,
-    configs?: { waterConfig?: WaterConfig; screenBreakConfig?: ScreenBreakConfig; timeZone?: string }
+    configs?: { waterConfig?: WaterConfig; screenBreakConfig?: ScreenBreakConfig; timeZone?: string; accountCreatedAt?: string | Date }
   ): Promise<TodayProgress> {
     const stats = await this.getStatistics(userId, configs);
     const waterCompleted = stats.today.waterCompleted;
     const waterExpected = stats.today.waterScheduled;
+    const waterMissed = stats.today.waterMissed;
+    const isWaterActive = stats.today.isWaterActive;
+    const isWaterFinalized = stats.today.isWaterFinalized;
+
     const screenCompleted = stats.today.screenCompleted;
     const screenExpected = stats.today.screenScheduled;
+    const screenMissed = stats.today.screenMissed;
+    const isScreenActive = stats.today.isScreenActive;
+    const isScreenFinalized = stats.today.isScreenFinalized;
 
     return {
       water: {
         completed: waterCompleted,
         expected: waterExpected,
+        missed: waterMissed,
+        isActive: isWaterActive,
+        isFinalized: isWaterFinalized,
         progressPercentage: waterExpected > 0 ? Math.min(100, Math.round((waterCompleted / waterExpected) * 100)) : 0,
       },
       lookOutside: {
         completed: screenCompleted,
         expected: screenExpected,
+        missed: screenMissed,
+        isActive: isScreenActive,
+        isFinalized: isScreenFinalized,
         progressPercentage: screenExpected > 0 ? Math.min(100, Math.round((screenCompleted / screenExpected) * 100)) : 0,
       },
     };
@@ -1104,7 +1470,7 @@ class ReminderService {
    */
   public async getCrossDeviceDiagnostics(
     userId?: string,
-    configs?: { waterConfig?: WaterConfig; screenBreakConfig?: ScreenBreakConfig; timeZone?: string }
+    configs?: { waterConfig?: WaterConfig; screenBreakConfig?: ScreenBreakConfig; timeZone?: string; accountCreatedAt?: string | Date }
   ) {
     const activeUserId = userId || (await this.resolveUserId()) || 'unknown';
     const stats = await this.getStatistics(activeUserId, configs);
@@ -1112,14 +1478,10 @@ class ReminderService {
 
     return {
       userId: activeUserId,
-      supabaseProject: 'https://hwrsvdrhqenraeuqfqle.supabase.co',
-      timeZone: configs?.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-      lastEvaluatedAt: new Date().toISOString(),
-      offlinePendingCount: offlineQueue.length,
+      online: typeof navigator !== 'undefined' ? navigator.onLine : true,
+      pendingOfflineCount: offlineQueue.length,
       todayWaterCompleted: stats.today.waterCompleted,
-      todayWaterExpected: stats.today.waterScheduled,
       todayScreenCompleted: stats.today.screenCompleted,
-      todayScreenExpected: stats.today.screenScheduled,
       dailyCompletionRate: stats.dailyCompletionRate,
       weeklyCompletionRate: stats.weeklyCompletionRate,
       currentStreak: stats.currentStreak,
@@ -1133,13 +1495,17 @@ class ReminderService {
 
   public async getHistory(
     userId?: string,
-    options: HistoryQueryOptions & { timeZone?: string } = {}
+    options: HistoryQueryOptions & { timeZone?: string; accountCreatedAt?: string | Date } = {}
   ): Promise<UserHistoryResponse> {
     let currentUserId = userId;
-    if (!currentUserId) {
+    let accountCreatedAt = options.accountCreatedAt;
+
+    if (!currentUserId || !accountCreatedAt) {
       const user = await authService.getCurrentUser();
-      currentUserId = user?.id;
+      if (!currentUserId) currentUserId = user?.id;
+      if (!accountCreatedAt && user?.created_at) accountCreatedAt = user.created_at;
     }
+
     const page = options.page || 1;
     const limit = options.limit || 20;
 
@@ -1154,8 +1520,11 @@ class ReminderService {
     if (!currentUserId) return defaultResponse;
 
     const tz = options.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const createdDateObj = accountCreatedAt ? new Date(accountCreatedAt) : undefined;
+    const createdLocal = createdDateObj ? getLocalDateString(createdDateObj, tz) : undefined;
+    const createdTimeMs = createdDateObj ? createdDateObj.getTime() : 0;
 
-    // 1. Fetch events from cloud if online, fallback to local storage
+    // 1. Fetch completed events from cloud if online, fallback to local storage
     let allEvents: ReminderEventEntity[] = this.getLocalEvents(currentUserId);
 
     if (typeof navigator !== 'undefined' && navigator.onLine) {
@@ -1164,14 +1533,18 @@ class ReminderService {
           .from('reminder_events')
           .select('*')
           .eq('user_id', currentUserId)
-          .order('scheduled_at', { ascending: false });
+          .eq('status', 'completed');
+
+        if (accountCreatedAt) {
+          const iso = typeof accountCreatedAt === 'string' ? accountCreatedAt : accountCreatedAt.toISOString();
+          query = query.gte('scheduled_at', iso);
+        }
 
         if (options.type && options.type !== 'all') {
           query = query.eq('type', options.type);
         }
-        if (options.status && options.status !== 'all') {
-          query = query.eq('status', options.status);
-        }
+
+        query = query.order('scheduled_at', { ascending: false });
 
         const { data, error } = await query;
         if (!error && data) {
@@ -1182,7 +1555,7 @@ class ReminderService {
       }
     }
 
-    // 2. Filter by range and dates respecting user timezone
+    // 2. Filter by range and dates respecting user timezone — ONLY COMPLETED REMINDERS >= accountCreatedAt
     const now = new Date();
     const todayLocal = getLocalDateString(now, tz);
     const yesterday = new Date(now);
@@ -1190,17 +1563,21 @@ class ReminderService {
     const yesterdayLocal = getLocalDateString(yesterday, tz);
 
     let filtered = allEvents.filter((e) => {
+      // Must be completed
+      if (e.status !== 'completed') return false;
+
       // Type filter
       if (options.type && options.type !== 'all') {
         const norm = (e.type as string) === 'screen' ? 'look_outside' : e.type;
         if (norm !== options.type) return false;
       }
-      // Status filter
-      if (options.status && options.status !== 'all') {
-        if (e.status !== options.status) return false;
-      }
 
-      const eventDate = getLocalDateString(new Date(e.completed_at || e.scheduled_at || e.created_at), tz);
+      const evTime = new Date(e.completed_at || e.scheduled_at || e.created_at).getTime();
+      // Must be on or after account creation timestamp
+      if (accountCreatedAt && evTime < createdTimeMs) return false;
+
+      const eventDate = getLocalDateString(new Date(evTime), tz);
+      if (createdLocal && eventDate < createdLocal) return false;
 
       if (options.range === 'today') {
         return eventDate === todayLocal;
@@ -1211,12 +1588,14 @@ class ReminderService {
       if (options.range === 'this_week') {
         const weekAgo = new Date(now);
         weekAgo.setDate(weekAgo.getDate() - 7);
-        return new Date(e.completed_at || e.scheduled_at || e.created_at) >= weekAgo;
+        const lowerLimit = accountCreatedAt && new Date(accountCreatedAt) > weekAgo ? new Date(accountCreatedAt) : weekAgo;
+        return new Date(evTime) >= lowerLimit;
       }
       if (options.range === 'this_month') {
         const monthAgo = new Date(now);
         monthAgo.setDate(monthAgo.getDate() - 30);
-        return new Date(e.completed_at || e.scheduled_at || e.created_at) >= monthAgo;
+        const lowerLimit = accountCreatedAt && new Date(accountCreatedAt) > monthAgo ? new Date(accountCreatedAt) : monthAgo;
+        return new Date(evTime) >= lowerLimit;
       }
       if (options.range === 'custom' && (options.startDate || options.endDate)) {
         if (options.startDate && eventDate < options.startDate) return false;
@@ -1226,10 +1605,10 @@ class ReminderService {
       return true;
     });
 
-    // Sort descending by scheduled_at / created_at
+    // Sort descending by scheduled_at / completed_at / created_at
     filtered.sort((a, b) => {
-      const timeA = new Date(a.scheduled_at || a.created_at).getTime();
-      const timeB = new Date(b.scheduled_at || b.created_at).getTime();
+      const timeA = new Date(a.scheduled_at || a.completed_at || a.created_at).getTime();
+      const timeB = new Date(b.scheduled_at || b.completed_at || b.created_at).getTime();
       return timeB - timeA;
     });
 

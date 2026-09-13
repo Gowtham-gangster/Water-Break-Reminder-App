@@ -1,5 +1,5 @@
 // src/services/settingsService.ts
-// EyeFlow V2 — Official Supabase User Settings Service
+// PauseFlow V2 — Official Supabase User Settings Service
 
 import { supabase } from './supabaseClient.ts';
 import { storageEngine } from '../engine/storageEngine.ts';
@@ -11,7 +11,7 @@ export class SettingsService {
    * Returns the user-scoped local cache key for settings
    */
   public getScopedSettingsKey(userId: string): string {
-    return `eyeflow:v2:${userId}:settings`;
+    return `pauseflow:v2:${userId}:settings`;
   }
 
   /**

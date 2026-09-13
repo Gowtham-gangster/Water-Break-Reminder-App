@@ -1,5 +1,5 @@
 // src/services/developmentDiagnostics.ts
-// EyeFlow V2 — Comprehensive Development-Only Diagnostics & Cross-Device Sync Status Monitor
+// PauseFlow V2 — Comprehensive Development-Only Diagnostics & Cross-Device Sync Status Monitor
 // (Zero exposure of tokens, secrets, or private keys)
 
 export interface SyncStatusItem {
@@ -41,7 +41,7 @@ class DevelopmentDiagnosticsService {
     lastEventReceived: null,
     lastProfileReceived: null,
     lastConfigReceived: null,
-    platform: typeof window !== 'undefined' && (window as any).eyeflowNative ? 'windows' : 'web',
+    platform: typeof window !== 'undefined' && ((window as any).pauseflowNative || (window as any).eyeflowNative) ? 'windows' : 'web',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata',
   };
 
@@ -58,11 +58,13 @@ class DevelopmentDiagnosticsService {
   }
 
   private notify(): void {
-    const copy = this.getState();
-    this.listeners.forEach((l) => {
+    const currentState = this.getState();
+    this.listeners.forEach((listener) => {
       try {
-        l(copy);
-      } catch (_) {}
+        listener(currentState);
+      } catch (err) {
+        console.error('[PauseFlow Diagnostics] Listener error:', err);
+      }
     });
   }
 
@@ -149,7 +151,7 @@ class DevelopmentDiagnosticsService {
 
   private log(message: string) {
     if (typeof window !== 'undefined') {
-      console.log(`[EyeFlow Diagnostics] ${message}`);
+      console.log(`[PauseFlow Diagnostics] ${message}`);
     }
   }
 }

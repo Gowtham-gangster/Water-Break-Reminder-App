@@ -1,10 +1,5 @@
-// Centralized Production Notification Service for EyeFlow (Windows Desktop + Android Mobile + Web Mode)
+// Centralized Production Notification Service for PauseFlow (Windows Desktop Electron + Android Mobile + Web Mode)
 import { LocalNotifications } from '@capacitor/local-notifications';
-import {
-  isPermissionGranted as isTauriPermissionGranted,
-  requestPermission as requestTauriPermission,
-  sendNotification as sendTauriNotification,
-} from '@tauri-apps/plugin-notification';
 import { detectPlatform } from '../platform/systemLifecycle';
 
 export interface NotificationDiagnostics {
@@ -35,8 +30,8 @@ export class NotificationService {
   public isDesktop(): boolean {
     if (typeof window === 'undefined') return false;
     return (
+      'pauseflowNative' in window ||
       'eyeflowNative' in window ||
-      '__TAURI_INTERNALS__' in window ||
       Boolean((window as any).process?.type)
     );
   }
@@ -46,12 +41,8 @@ export class NotificationService {
     return platform === 'android';
   }
 
-  public isTauri(): boolean {
-    return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-  }
-
   public isElectron(): boolean {
-    return typeof window !== 'undefined' && 'eyeflowNative' in window;
+    return typeof window !== 'undefined' && ('pauseflowNative' in window || 'eyeflowNative' in window);
   }
 
   private initAudio() {
@@ -69,7 +60,7 @@ export class NotificationService {
     if (this.channelsCreated || !this.isMobile()) return;
     try {
       await LocalNotifications.createChannel({
-        id: 'eyeflow_water_channel',
+        id: 'pauseflow_water_channel',
         name: 'Water Reminders',
         description: 'Notifications reminding you to hydrate and take a water break',
         importance: 5,
@@ -78,7 +69,7 @@ export class NotificationService {
       });
 
       await LocalNotifications.createChannel({
-        id: 'eyeflow_screen_channel',
+        id: 'pauseflow_screen_channel',
         name: 'Look Outside Screen Breaks',
         description: 'Notifications reminding you to give your eyes a short break from the screen',
         importance: 5,
@@ -109,15 +100,6 @@ export class NotificationService {
       }
     }
 
-    if (this.isTauri()) {
-      try {
-        const granted = await isTauriPermissionGranted();
-        return granted ? 'granted' : 'denied';
-      } catch {
-        return 'default';
-      }
-    }
-
     if (typeof window !== 'undefined' && 'Notification' in window) {
       return Notification.permission;
     }
@@ -140,16 +122,6 @@ export class NotificationService {
         return perm.display === 'granted' ? 'granted' : 'denied';
       } catch (e: any) {
         this.lastError = e?.message || 'Android notification permission request failed';
-        return 'denied';
-      }
-    }
-
-    if (this.isTauri()) {
-      try {
-        const permission = await requestTauriPermission();
-        return permission === 'granted' ? 'granted' : 'denied';
-      } catch (e: any) {
-        this.lastError = e?.message || 'Native permission request failed';
         return 'denied';
       }
     }
@@ -409,8 +381,10 @@ export class NotificationService {
               id: Math.floor(Date.now() % 1000000),
               title,
               body,
+              smallIcon: 'pauseflow_notification',
+              iconColor: '#0284c7',
               schedule: { at: new Date(Date.now() + 100) },
-              channelId: 'eyeflow_water_channel',
+              channelId: 'pauseflow_water_channel',
               actionTypeId: 'water',
               extra: {
                 category: 'water',
@@ -430,28 +404,7 @@ export class NotificationService {
       }
     }
 
-    if (this.isTauri()) {
-      try {
-        const perm = await this.getPermissionStatus();
-        if (perm !== 'granted') {
-          this.lastAttemptStatus = 'blocked';
-          this.lastError = 'Native notification permission is denied';
-          return { success: false, error: 'Permission denied in Windows Desktop' };
-        }
-
-        sendTauriNotification({ title, body });
-        this.lastAttemptStatus = 'success';
-        this.lastError = null;
-        if (onComplete) onComplete();
-        return { success: true };
-      } catch (err: any) {
-        this.lastAttemptStatus = 'error';
-        this.lastError = err?.message || 'Notification execution failed';
-        return { success: false, error: this.lastError! };
-      }
-    }
-
-    // Web Browser Mode
+    // Web Browser / Electron Desktop Notification Mode
     if (typeof window !== 'undefined' && 'Notification' in window) {
       if (Notification.permission !== 'granted') {
         this.lastAttemptStatus = 'blocked';
@@ -466,7 +419,7 @@ export class NotificationService {
         const notif = new Notification(title, {
           body,
           icon: '/favicon.ico',
-          tag: 'eyeflow-water-reminder',
+          tag: 'pauseflow-water-reminder',
         });
         notif.onclick = () => {
           window.focus();
@@ -523,8 +476,10 @@ export class NotificationService {
               id: Math.floor(Date.now() % 1000000),
               title,
               body,
+              smallIcon: 'pauseflow_notification',
+              iconColor: '#0284c7',
               schedule: { at: new Date(Date.now() + 100) },
-              channelId: 'eyeflow_screen_channel',
+              channelId: 'pauseflow_screen_channel',
               actionTypeId: 'screen',
               extra: {
                 category: 'screen',
@@ -544,23 +499,34 @@ export class NotificationService {
       }
     }
 
-    if (this.isTauri()) {
-      try {
-        const perm = await this.getPermissionStatus();
-        if (perm !== 'granted') {
-          this.lastAttemptStatus = 'blocked';
-          this.lastError = 'Native notification permission is denied';
-          return { success: false, error: 'Permission denied in Windows Desktop' };
-        }
+    // Web Browser / Electron Desktop Notification Mode
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      if (Notification.permission !== 'granted') {
+        this.lastAttemptStatus = 'blocked';
+        this.lastError =
+          Notification.permission === 'denied'
+            ? 'Browser notifications are blocked in your browser settings'
+            : 'Browser notification permission has not been granted yet';
+        return { success: false, error: this.lastError };
+      }
 
-        sendTauriNotification({ title, body });
+      try {
+        const notif = new Notification(title, {
+          body,
+          icon: '/favicon.ico',
+          tag: 'pauseflow-screen-reminder',
+        });
+        notif.onclick = () => {
+          window.focus();
+          if (onStartBreak) onStartBreak();
+          notif.close();
+        };
         this.lastAttemptStatus = 'success';
         this.lastError = null;
-        if (onStartBreak) onStartBreak();
         return { success: true };
       } catch (err: any) {
         this.lastAttemptStatus = 'error';
-        this.lastError = err?.message || 'Notification execution failed';
+        this.lastError = err?.message || 'Browser notification creation failed';
         return { success: false, error: this.lastError! };
       }
     }
@@ -580,7 +546,7 @@ export class NotificationService {
         const notif = new Notification(title, {
           body,
           icon: '/favicon.ico',
-          tag: 'eyeflow-screen-break',
+          tag: 'pauseflow-screen-break',
         });
         notif.onclick = () => {
           window.focus();

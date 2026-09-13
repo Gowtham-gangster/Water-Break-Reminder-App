@@ -1,5 +1,5 @@
 // src/services/lookOutsideConfigService.ts
-// EyeFlow V2 — Official Supabase Look Outside Configuration Service
+// PauseFlow V2 — Official Supabase Look Outside Configuration Service
 
 import { supabase } from './supabaseClient.ts';
 import { storageEngine } from '../engine/storageEngine.ts';
@@ -11,7 +11,7 @@ export class LookOutsideConfigService {
    * Returns user-scoped local storage key for look outside configuration
    */
   public getScopedLookOutsideKey(userId: string): string {
-    return `eyeflow:v2:${userId}:lookOutside`;
+    return `pauseflow:v2:${userId}:lookOutside`;
   }
 
   /**

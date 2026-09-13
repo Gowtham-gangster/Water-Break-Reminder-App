@@ -1,5 +1,7 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
+import { BrandLogo } from '../ui';
+import { pauseService } from '../../services/pauseService';
 import {
   Home,
   Droplets,
@@ -43,10 +45,7 @@ export const Sidebar: React.FC = () => {
     setGeneralSettings({ ...generalSettings, theme: nextTheme });
   };
 
-  const isPaused =
-    pauseState.isPaused &&
-    pauseState.pauseUntil &&
-    new Date(pauseState.pauseUntil).getTime() > Date.now();
+  const isPaused = pauseService.isRemindersPaused(pauseState, Date.now());
 
   const [avatarLoadFailed, setAvatarLoadFailed] = React.useState(false);
 
@@ -68,21 +67,12 @@ export const Sidebar: React.FC = () => {
     <aside className="w-56 shrink-0 h-screen sticky top-0 bg-[var(--bg-surface)] border-r border-[var(--border-subtle)] flex flex-col justify-between p-5 select-none z-30">
       {/* Top: Brand & Main Navigation */}
       <div className="space-y-7">
-        <div className="flex items-center gap-3 px-1 pt-1">
-          <img
-            src="/icon.png"
-            alt="PauseFlow"
-            className="w-8 h-8 rounded-xl object-contain shadow-sm"
-          />
-          <div>
-            <span className="font-bold text-sm tracking-tight text-[var(--text-primary)] block">
-              PauseFlow
-            </span>
-            <span className="text-[11px] text-[var(--text-muted)] font-medium leading-none block mt-0.5">
-              Digital Wellness
-            </span>
-          </div>
-        </div>
+        <BrandLogo
+          size="lg"
+          subtitle="Digital Wellness"
+          textClassName="text-[var(--text-primary)]"
+          className="px-1 pt-1"
+        />
 
         {/* 5 Main Sections */}
         <nav className="space-y-1">

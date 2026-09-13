@@ -34,7 +34,7 @@ export const Button: React.FC<ButtonProps> = ({
   ...props
 }) => {
   const baseStyles =
-    'inline-flex items-center justify-center font-medium rounded-[var(--radius-md)] transition-all duration-150 select-none cursor-pointer outline-none active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100';
+    'inline-flex items-center justify-center font-medium rounded-[var(--radius-md)] transition-all duration-150 select-none cursor-pointer outline-none active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 whitespace-nowrap';
 
   const sizeStyles = {
     sm: 'text-xs px-3.5 py-1.5 gap-1.5 min-h-[36px]',
@@ -72,12 +72,12 @@ export const Button: React.FC<ButtonProps> = ({
       {...props}
     >
       {isLoading ? (
-        <span className="w-4 h-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
+        <span className="w-4 h-4 rounded-full border-2 border-current border-t-transparent animate-spin shrink-0" />
       ) : (
-        leftIcon && <span className="shrink-0">{leftIcon}</span>
+        leftIcon && <span className="shrink-0 inline-flex items-center">{leftIcon}</span>
       )}
-      <span>{children}</span>
-      {!isLoading && rightIcon && <span className="shrink-0">{rightIcon}</span>}
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap">{children}</span>
+      {!isLoading && rightIcon && <span className="shrink-0 inline-flex items-center">{rightIcon}</span>}
     </button>
   );
 };

@@ -12,7 +12,7 @@ import type {
 } from '../types/index.ts';
 import { APP_CONFIG } from '../config/app.config.ts';
 
-const DB_NAME = 'eyeflow_db';
+const DB_NAME = 'pauseflow_db';
 const DB_VERSION = 1;
 
 class StorageEngine {
@@ -45,12 +45,15 @@ class StorageEngine {
       if (this.dbPromise) {
         const db = await this.dbPromise;
         await db.put(storeName, val, key);
-      } else {
-        localStorage.setItem(key, JSON.stringify(val));
+      } else if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(key, JSON.stringify(val));
       }
     } catch (err) {
-      console.warn('DB set error, falling back to localStorage', err);
-      localStorage.setItem(key, JSON.stringify(val));
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          window.localStorage.setItem(key, JSON.stringify(val));
+        } catch (_) {}
+      }
     }
   }
 
@@ -58,24 +61,50 @@ class StorageEngine {
     try {
       if (this.dbPromise) {
         const db = await this.dbPromise;
-        const result = await db.get(storeName, key);
-        return result !== undefined ? result : defaultValue;
-      } else {
-        const local = localStorage.getItem(key);
+        let result = await db.get(storeName, key);
+        if (result === undefined && key.startsWith('pauseflow:')) {
+          const legacyKey = key.replace('pauseflow:', 'eyeflow:');
+          const legacyResult = await db.get(storeName, legacyKey);
+          if (legacyResult !== undefined) {
+            result = legacyResult;
+            try {
+              await db.put(storeName, legacyResult, key);
+            } catch (_) {}
+          }
+        }
+        if (result !== undefined) return result;
+      }
+      
+      if (typeof window !== 'undefined' && window.localStorage) {
+        let local = window.localStorage.getItem(key);
+        if (local === null && key.startsWith('pauseflow:')) {
+          const legacyKey = key.replace('pauseflow:', 'eyeflow:');
+          const legacyLocal = window.localStorage.getItem(legacyKey);
+          if (legacyLocal !== null) {
+            local = legacyLocal;
+            try {
+              window.localStorage.setItem(key, legacyLocal);
+            } catch (_) {}
+          }
+        }
         return local ? JSON.parse(local) : defaultValue;
       }
+      return defaultValue;
     } catch (err) {
-      console.warn('DB get error, falling back to localStorage', err);
-      const local = localStorage.getItem(key);
-      return local ? JSON.parse(local) : defaultValue;
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          const local = window.localStorage.getItem(key);
+          return local ? JSON.parse(local) : defaultValue;
+        } catch (_) {}
+      }
+      return defaultValue;
     }
   }
 
   // Canonical User-scoped key generator
   public getScopedKey(key: string, userId?: string | null): string {
-    return userId ? `eyeflow:v2:${userId}:${key}` : key;
+    return userId ? `pauseflow:v2:${userId}:${key}` : key;
   }
-
 
   // Helper getters/setters for user-specific application state
   public async loadWaterConfig(userId?: string | null): Promise<WaterConfig> {
@@ -184,13 +213,13 @@ class StorageEngine {
   public async clearUserScopedTransientState(userId?: string | null): Promise<void> {
     if (!userId) return;
     try {
-      if (typeof window !== 'undefined') {
-        const prefixes = [`usr_${userId}:`, `eyeflow:v2:${userId}:`];
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const key = localStorage.key(i);
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const prefixes = [`usr_${userId}:`, `pauseflow:v2:${userId}:`, `eyeflow:v2:${userId}:`];
+        for (let i = window.localStorage.length - 1; i >= 0; i--) {
+          const key = window.localStorage.key(i);
           if (key && (prefixes.some((p) => key.startsWith(p)) || key.includes(`:${userId}:`))) {
             if (key.includes('activeReminders') || key.includes('transient') || key.includes('timers')) {
-              localStorage.removeItem(key);
+              window.localStorage.removeItem(key);
             }
           }
         }
@@ -203,12 +232,12 @@ class StorageEngine {
   public async clearUserData(userId?: string | null): Promise<void> {
     if (!userId) return;
     try {
-      if (typeof window !== 'undefined') {
-        const prefixes = [`usr_${userId}:`, `eyeflow:v2:${userId}:`];
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const key = localStorage.key(i);
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const prefixes = [`usr_${userId}:`, `pauseflow:v2:${userId}:`, `eyeflow:v2:${userId}:`];
+        for (let i = window.localStorage.length - 1; i >= 0; i--) {
+          const key = window.localStorage.key(i);
           if (key && prefixes.some((p) => key.startsWith(p))) {
-            localStorage.removeItem(key);
+            window.localStorage.removeItem(key);
           }
         }
       }
@@ -219,4 +248,3 @@ class StorageEngine {
 }
 
 export const storageEngine = new StorageEngine();
-

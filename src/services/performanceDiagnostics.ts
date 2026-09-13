@@ -1,5 +1,5 @@
 // src/services/performanceDiagnostics.ts
-// EyeFlow V2 — Real-Time Performance & Synchronization Latency Instrumentation
+// PauseFlow V2 — Real-Time Performance & Synchronization Latency Instrumentation
 
 export interface SyncPerformanceMetrics {
   localUiLatencyMs: number;
@@ -74,7 +74,7 @@ class PerformanceDiagnosticsService {
 
   public printDiagnosticSummary(): void {
     console.log('==============================================');
-    console.log('  EYEFLOW SYNC PERFORMANCE INSTRUMENTATION     ');
+    console.log('  PAUSEFLOW SYNC PERFORMANCE INSTRUMENTATION   ');
     console.log('==============================================');
     console.log(`Local UI update latency        : ${this.metrics.localUiLatencyMs} ms`);
     console.log(`Supabase write latency         : ${this.metrics.supabaseWriteLatencyMs} ms`);

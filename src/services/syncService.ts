@@ -1,11 +1,12 @@
 // src/services/syncService.ts
-// EyeFlow V2 — Supabase Cross-Device Synchronization, Offline Cache & Conflict Resolution Engine
+// PauseFlow V2 — Supabase Cross-Device Synchronization, Offline Cache & Conflict Resolution Engine
 
 import { settingsService } from './settingsService.ts';
 import { waterConfigService } from './waterConfigService.ts';
 import { lookOutsideConfigService } from './lookOutsideConfigService.ts';
 import { profileService } from './profileService.ts';
 import { reminderService } from './reminderService.ts';
+import { pauseService, type ReminderPauseStateEntity } from './pauseService.ts';
 import { deviceService } from './deviceService.ts';
 import { realtimeSyncService } from './realtimeSyncService.ts';
 import { performanceDiagnostics } from './performanceDiagnostics.ts';
@@ -25,6 +26,7 @@ export interface UserFullSyncResult {
   settings: UserSettingsEntity | null;
   waterConfig: WaterConfigEntity | null;
   lookOutsideConfig: LookOutsideConfigEntity | null;
+  pauseState: ReminderPauseStateEntity | null;
   todayEvents: ReminderEventEntity[];
   flushedOfflineEventsCount: number;
   lastSyncAt: string;
@@ -38,9 +40,9 @@ export class SyncService {
    */
   public getScopedKey(
     userId: string,
-    domain: 'profile' | 'settings' | 'water' | 'lookOutside' | 'statistics' | 'activeReminders' | 'pending_sync_queue'
+    domain: 'profile' | 'settings' | 'water' | 'lookOutside' | 'statistics' | 'activeReminders' | 'pending_sync_queue' | 'pause_state'
   ): string {
-    return `eyeflow:v2:${userId}:${domain}`;
+    return `pauseflow:v2:${userId}:${domain}`;
   }
 
   /**
@@ -61,6 +63,7 @@ export class SyncService {
         settings: null,
         waterConfig: null,
         lookOutsideConfig: null,
+        pauseState: null,
         todayEvents: [],
         flushedOfflineEventsCount: 0,
         lastSyncAt: nowIso,
@@ -86,11 +89,12 @@ export class SyncService {
       flushedCount = await reminderService.flushOfflineEvents(userId);
 
       // 3. Fetch Latest Cloud Records in parallel
-      const [profileRes, settingsRes, waterRes, screenRes, todayEvents] = await Promise.all([
+      const [profileRes, settingsRes, waterRes, screenRes, pauseStateRes, todayEvents] = await Promise.all([
         profileService.getProfile(userId),
         settingsService.getSettings(userId),
         waterConfigService.getWaterConfig(userId),
         lookOutsideConfigService.getLookOutsideConfig(userId),
+        pauseService.getPauseState(userId),
         reminderService.getTodayEvents(userId),
       ]);
 
@@ -98,6 +102,7 @@ export class SyncService {
       const settings = settingsRes.settings;
       const waterConfig = waterRes.config;
       const lookOutsideConfig = screenRes.config;
+      const pauseState = pauseStateRes;
 
       // Update diagnostic trackers
       developmentDiagnostics.setProfileFetch(profile ? 'SYNCED' : 'IDLE');
@@ -119,6 +124,9 @@ export class SyncService {
       if (lookOutsideConfig) {
         await storageEngine.set(this.getScopedKey(userId, 'lookOutside'), lookOutsideConfig);
       }
+      if (pauseState) {
+        await storageEngine.set(this.getScopedKey(userId, 'pause_state'), pauseState);
+      }
 
       // 5. Connect Realtime Channel
       realtimeSyncService.subscribe(userId);
@@ -136,6 +144,7 @@ export class SyncService {
         settings,
         waterConfig,
         lookOutsideConfig,
+        pauseState,
         todayEvents,
         flushedOfflineEventsCount: flushedCount,
         lastSyncAt: nowIso,
@@ -149,6 +158,7 @@ export class SyncService {
       const cachedSettings = await storageEngine.get<UserSettingsEntity | null>(this.getScopedKey(userId, 'settings'), null);
       const cachedWater = await storageEngine.get<WaterConfigEntity | null>(this.getScopedKey(userId, 'water'), null);
       const cachedScreen = await storageEngine.get<LookOutsideConfigEntity | null>(this.getScopedKey(userId, 'lookOutside'), null);
+      const cachedPause = await storageEngine.get<ReminderPauseStateEntity | null>(this.getScopedKey(userId, 'pause_state'), null);
       const cachedTodayEvents = await reminderService.getTodayEvents(userId);
 
       return {
@@ -157,6 +167,7 @@ export class SyncService {
         settings: cachedSettings,
         waterConfig: cachedWater,
         lookOutsideConfig: cachedScreen,
+        pauseState: cachedPause,
         todayEvents: cachedTodayEvents,
         flushedOfflineEventsCount: 0,
         lastSyncAt: nowIso,

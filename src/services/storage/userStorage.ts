@@ -1,7 +1,7 @@
 /**
- * EyeFlow V2 User-Scoped Storage Abstraction
- * Enforces key separation: eyeflow:v2:<userId>:<category>
- * Guarantees zero collision or mutation of V1 production storage (eyeflow:v1:*)
+ * PauseFlow V2 User-Scoped Storage Abstraction
+ * Enforces key separation: pauseflow:v2:<userId>:<category>
+ * Automatically migrates legacy eyeflow:v2:<userId>:<category> keys seamlessly
  */
 
 export interface UserScopedStorage {
@@ -14,6 +14,7 @@ export interface UserScopedStorage {
 export class UserStorageManager implements UserScopedStorage {
   private userId: string;
   private prefix: string;
+  private legacyPrefix: string;
 
   constructor(userId: string) {
     if (!userId || typeof userId !== 'string') {
@@ -21,17 +22,30 @@ export class UserStorageManager implements UserScopedStorage {
     }
     this.userId = userId;
     // Uses VITE_STORAGE_PREFIX from environment or fallback
-    const envPrefix = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_STORAGE_PREFIX) || 'eyeflow:v2:';
+    const envPrefix = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_STORAGE_PREFIX) || 'pauseflow:v2:';
     this.prefix = `${envPrefix}${this.userId}:`;
+    this.legacyPrefix = `eyeflow:v2:${this.userId}:`;
   }
 
   private fullKey(key: string): string {
     return `${this.prefix}${key}`;
   }
 
+  private legacyFullKey(key: string): string {
+    return `${this.legacyPrefix}${key}`;
+  }
+
   public get<T>(key: string, defaultValue: T): T {
     try {
-      const raw = localStorage.getItem(this.fullKey(key));
+      let raw = localStorage.getItem(this.fullKey(key));
+      if (raw === null || raw === undefined) {
+        // Fallback and migrate legacy eyeflow key
+        const legacyRaw = localStorage.getItem(this.legacyFullKey(key));
+        if (legacyRaw !== null && legacyRaw !== undefined) {
+          raw = legacyRaw;
+          localStorage.setItem(this.fullKey(key), raw);
+        }
+      }
       if (raw === null || raw === undefined) return defaultValue;
       return JSON.parse(raw) as T;
     } catch (e) {
@@ -51,6 +65,7 @@ export class UserStorageManager implements UserScopedStorage {
   public remove(key: string): void {
     try {
       localStorage.removeItem(this.fullKey(key));
+      localStorage.removeItem(this.legacyFullKey(key));
     } catch (e) {
       console.error(`[UserStorageManager] Error removing ${this.fullKey(key)}:`, e);
     }
@@ -61,7 +76,7 @@ export class UserStorageManager implements UserScopedStorage {
       const keysToRemove: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && k.startsWith(this.prefix)) {
+        if (k && (k.startsWith(this.prefix) || k.startsWith(this.legacyPrefix))) {
           keysToRemove.push(k);
         }
       }
