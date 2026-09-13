@@ -12,6 +12,10 @@ dist
 dist-ssr
 dist-desktop
 dist-electron
+# Environment variables
+.env
+.env.*
+!.env.example
 *.local
 *.zip
 
