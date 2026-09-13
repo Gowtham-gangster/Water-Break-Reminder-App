@@ -1,4 +1,4 @@
-# PauseFlow
+# <img src="icon.png" width="32" height="32" alt="PauseFlow Icon" style="vertical-align: middle; margin-right: 8px;" /> PauseFlow
 
 > **"Drink water. Look away. Feel better."**
 
@@ -274,89 +274,14 @@ All database tables, constraints, RLS policies, and triggers are defined in [`su
 
 ---
 
-## 🚀 Development Setup
+## 📦 Downloads & Releases
 
-### 1. Clone the Repository
-```bash
-git clone https://github.com/Gowtham-gangster/Water-Break-Reminder-App.git
-cd Water-Break-Reminder-App
-```
+### Android Application
+- **Release APK**: [PauseFlow.apk](releases/android/PauseFlow.apk)
 
-### 2. Configure Environment Variables
-Create a local `.env` file from the provided template:
-```bash
-cp .env.example .env
-```
-Open `.env` and configure your Supabase URL and Publishable/Anon Key:
-```env
-VITE_APP_ENV=development
-VITE_APP_VERSION=1.0.0
-VITE_STORAGE_PREFIX=pauseflow:v2:
-
-VITE_SUPABASE_URL=https://your-project-ref.supabase.co
-VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
-VITE_SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
-```
-
-### 3. Install Dependencies
-```bash
-npm install
-```
-
----
-
-## 🏃 Running the Application
-
-### Run Web Development Server
-```bash
-npm run dev
-```
-Access the application at `http://localhost:5173`.
-
-### Run Windows Desktop in Development Mode
-```bash
-npm run desktop:dev
-```
-
-### Open Android Project in Android Studio
-```bash
-npm run android:open
-```
-
----
-
-## 📦 Build & Packaging
-
-| Target | Command | Output Directory |
-| :--- | :--- | :--- |
-| **Production Web Bundle** | `npm run build` | `dist/` |
-| **Windows Desktop Executable** | `npm run package:win` | `dist-electron/win-unpacked/` |
-| **Windows NSIS Installer** | `npm run dist:win` | `dist-electron/` |
-| **Capacitor Android Sync** | `npm run android:sync` | `android/app/src/main/assets/public/` |
-| **Android Release APK** | `npm run android:build` | `releases/android/PauseFlow.apk` |
-| **Code Linting** | `npm run lint` | CLI output |
-
----
-
-## 🚚 Release Artifacts
-
-- **Android Release APK**: [`releases/android/PauseFlow.apk`](file:///d:/Gowtham%20Project's/Reminder%20App/releases/android/PauseFlow.apk)
-- **Windows Desktop Application**: `dist-electron/win-unpacked/PauseFlow.exe`
-
----
-
-## 🧪 Testing & Validation Expectations
-
-When validating reminder delivery and progress calculation, verify against the following test matrix:
-
-| Scenario | Expected Behavior | Verification Status |
-| :--- | :--- | :--- |
-| **App Foreground** | Notification arrives on time $\rightarrow$ progress increments immediately without tapping. | Code & Pipeline Verified |
-| **App Background** | Notification arrives on time $\rightarrow$ native completion recorded $\rightarrow$ progress accurate upon resume. | Code & Pipeline Verified |
-| **App Closed / Killed** | AlarmManager fires BroadcastReceiver $\rightarrow$ disk write committed $\rightarrow$ startup reconciliation syncs progress. | Code & Pipeline Verified |
-| **Notification Tap** | Tapping notification opens reminder modal $\rightarrow$ does NOT create a duplicate completion record. | Code & Pipeline Verified |
-| **Offline Delivery** | Reminders trigger locally $\rightarrow$ completion cached $\rightarrow$ flushes to Supabase upon reconnection. | Code & Pipeline Verified |
-| **Paused State** | Reminders during paused window are suppressed and not counted as completed. | Code & Pipeline Verified |
+### Windows Desktop Scripts
+- **Install Script**: [install.bat](releases/desktop/install.bat)
+- **Uninstall Script**: [uninstall.bat](releases/desktop/uninstall.bat)
 
 ---
 
@@ -368,6 +293,43 @@ When validating reminder delivery and progress calculation, verify against the f
 
 ---
 
+## 🤝 Contributing
+
+Contributions, issues, and feature requests are welcome!
+
+1. **Fork the Repository**: Create your own branch (`git checkout -b feature/AmazingFeature`).
+2. **Commit Your Changes**: Follow clear and descriptive commit messages (`git commit -m 'feat: add amazing feature'`).
+3. **Push to the Branch**: Push to your branch (`git push origin feature/AmazingFeature`).
+4. **Open a Pull Request**: Submit a PR describing your changes and testing performed.
+
+Please make sure to write clean code, adhere to TypeScript strict typing, and test across targeted platforms.
+
+---
+
 ## 📄 License
 
-This project is licensed under the MIT License.
+Distributed under the **MIT License**.
+
+```text
+MIT License
+
+Copyright (c) 2026 PauseFlow Team
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
