@@ -42,3 +42,4 @@ release/
 !releases/
 !releases/README.md
 !releases/desktop/*.bat
+!releases/android/*.apk
