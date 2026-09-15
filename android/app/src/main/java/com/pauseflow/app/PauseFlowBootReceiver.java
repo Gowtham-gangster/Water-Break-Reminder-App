@@ -14,11 +14,10 @@ import org.json.JSONObject;
 /**
  * PauseFlowBootReceiver
  * Restores scheduled exact alarms when device boots or package is updated.
+ * Strictly restores alarms for authenticated active users only.
  */
 public class PauseFlowBootReceiver extends BroadcastReceiver {
     private static final String TAG = "PauseFlowBootReceiver";
-    public static final String PREFS_SCHEDULED = "pauseflow_scheduled_alarms";
-    public static final String KEY_SCHEDULED_LIST = "scheduled_list";
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -39,6 +38,8 @@ public class PauseFlowBootReceiver extends BroadcastReceiver {
             }
 
             try {
+                // Wipe any legacy global un-scoped prefs
+                PauseFlowNativePlugin.cleanupLegacyGlobalPrefs(context);
                 restoreScheduledAlarms(context);
             } finally {
                 if (wakeLock != null && wakeLock.isHeld()) {
@@ -55,8 +56,20 @@ public class PauseFlowBootReceiver extends BroadcastReceiver {
 
     public static void restoreScheduledAlarms(Context context) {
         try {
-            SharedPreferences prefs = context.getSharedPreferences(PREFS_SCHEDULED, Context.MODE_PRIVATE);
-            String json = prefs.getString(KEY_SCHEDULED_LIST, "[]");
+            // Find active authenticated user
+            SharedPreferences activePrefs = context.getSharedPreferences(PauseFlowNativePlugin.PREFS_ACTIVE_USER, Context.MODE_PRIVATE);
+            String activeUserId = activePrefs.getString(PauseFlowNativePlugin.KEY_ACTIVE_USER_ID, "");
+
+            if (activeUserId == null || activeUserId.trim().isEmpty() || "default_user".equals(activeUserId) || "local_user".equals(activeUserId)) {
+                Log.w(TAG, "[PauseFlow][SECURITY] stage=ANONYMOUS_SCHEDULER_BLOCKED reason=boot_restore_no_active_user");
+                return;
+            }
+
+            String userPrefsName = PauseFlowNativePlugin.getScheduledPrefsName(activeUserId);
+            if (userPrefsName == null) return;
+
+            SharedPreferences prefs = context.getSharedPreferences(userPrefsName, Context.MODE_PRIVATE);
+            String json = prefs.getString(PauseFlowNativePlugin.KEY_SCHEDULED_LIST, "[]");
             JSONArray array = new JSONArray(json);
             long now = System.currentTimeMillis();
             AlarmManager alarmManager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
@@ -69,17 +82,22 @@ public class PauseFlowBootReceiver extends BroadcastReceiver {
                 long scheduledTimestamp = item.optLong("scheduledTimestamp", 0);
                 String eventId = item.optString("eventId", "");
                 String category = item.optString("category", "water");
-                String userId = item.optString("userId", "");
+                String userId = item.optString("userId", activeUserId);
                 String title = item.optString("title", "");
                 String body = item.optString("body", "");
                 int durationSeconds = item.optInt("durationSeconds", 120);
+
+                if (!activeUserId.equals(userId)) {
+                    Log.w(TAG, "[PauseFlow][SECURITY] stage=ANONYMOUS_SCHEDULER_BLOCKED reason=boot_user_mismatch itemUser=" + userId + " activeUser=" + activeUserId);
+                    continue;
+                }
 
                 if (scheduledTimestamp > now + 1000) {
                     Intent alarmIntent = new Intent(context, PauseFlowNotificationReceiver.class);
                     alarmIntent.setAction(PauseFlowNotificationReceiver.ACTION_REMINDER_ALARM);
                     alarmIntent.putExtra(PauseFlowNotificationReceiver.EXTRA_EVENT_ID, eventId);
                     alarmIntent.putExtra(PauseFlowNotificationReceiver.EXTRA_CATEGORY, category);
-                    alarmIntent.putExtra(PauseFlowNotificationReceiver.EXTRA_USER_ID, userId);
+                    alarmIntent.putExtra(PauseFlowNotificationReceiver.EXTRA_USER_ID, activeUserId);
                     alarmIntent.putExtra(PauseFlowNotificationReceiver.EXTRA_TITLE, title);
                     alarmIntent.putExtra(PauseFlowNotificationReceiver.EXTRA_BODY, body);
                     alarmIntent.putExtra(PauseFlowNotificationReceiver.EXTRA_SCHEDULED_TIMESTAMP, scheduledTimestamp);
@@ -101,10 +119,11 @@ public class PauseFlowBootReceiver extends BroadcastReceiver {
                 }
             }
 
-            prefs.edit().putString(KEY_SCHEDULED_LIST, remaining.toString()).commit();
-            Log.i(TAG, "Restored " + remaining.length() + " future reminder alarms");
+            prefs.edit().putString(PauseFlowNativePlugin.KEY_SCHEDULED_LIST, remaining.toString()).commit();
+            Log.i(TAG, "Restored " + remaining.length() + " future reminder alarms for active user " + activeUserId);
         } catch (Exception e) {
             Log.e(TAG, "Failed to restore scheduled alarms", e);
         }
     }
 }
+

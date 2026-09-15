@@ -29,6 +29,7 @@ import {
 import { useApp } from '../context/AppContext';
 import { reminderService, type UserStatistics, type UserHistoryResponse } from '../services/reminderService';
 import { DailyReportModal } from './DailyReportModal';
+import { formatUserTime, formatUserDateTime } from '../utils/timeFormat';
 
 type HistoryRange = 'today' | 'yesterday' | 'this_week' | 'this_month' | 'all' | 'custom';
 type HistoryTypeFilter = 'all' | 'water' | 'look_outside';
@@ -158,20 +159,12 @@ export const StatisticsPage: React.FC = () => {
     return `${monthNames[monthIdx] || dParts[1]} ${dParts[2]}`;
   };
 
-  // Format canonical reminder timestamp (e.g. "Sep 13 · 9:32 AM")
+  // Format canonical reminder timestamp (e.g. "11:15 PM" for today, or "Sep 13 · 9:32 AM" for other ranges)
   const formatReminderTimestamp = (timestamp?: string | null) => {
     if (!timestamp) return '';
-    try {
-      const d = new Date(timestamp);
-      if (isNaN(d.getTime())) return '';
-      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      const monthStr = monthNames[d.getMonth()];
-      const dayNum = d.getDate();
-      const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
-      return `${monthStr} ${dayNum} · ${timeStr}`;
-    } catch (_) {
-      return '';
-    }
+    return range === 'today'
+      ? formatUserTime(timestamp, generalSettings.timeFormat, generalSettings.timezone)
+      : formatUserDateTime(timestamp, generalSettings.timeFormat, generalSettings.timezone);
   };
 
   // If user is not authenticated, render clean empty / authentication state
@@ -608,35 +601,28 @@ export const StatisticsPage: React.FC = () => {
               return (
                 <div
                   key={ev.id || `${ev.scheduled_at}-${ev.type}`}
-                  className="flex items-center justify-between p-3.5 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)] hover:border-[var(--border-prominent)] transition-all"
+                  className="flex items-center justify-between py-2.5 px-3.5 rounded-[var(--radius-md)] bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-xs hover:border-[var(--border-prominent)] transition-all"
                 >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`w-9 h-9 rounded-lg flex items-center justify-center ${
-                        isWater
-                          ? 'bg-sky-500/10 text-sky-400'
-                          : 'bg-indigo-500/10 text-indigo-400'
-                      }`}
-                    >
-                      {isWater ? <Droplets className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-[var(--text-primary)]">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="font-mono text-[var(--text-muted)] text-[11px] flex items-center gap-1 shrink-0">
+                      <Clock className="w-3 h-3" />
+                      {formattedDisplayTime}
+                    </span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      {isWater ? (
+                        <Droplets className="w-3.5 h-3.5 text-[var(--water-primary)] shrink-0" />
+                      ) : (
+                        <Eye className="w-3.5 h-3.5 text-[var(--screen-primary)] shrink-0" />
+                      )}
+                      <span className="font-medium text-[var(--text-primary)] truncate">
                         {isWater ? 'Water Break' : 'Look Outside'}
-                      </p>
-                      <span className="text-xs text-[var(--text-muted)] flex items-center gap-1 font-mono">
-                        <Clock className="w-3 h-3" />
-                        {formattedDisplayTime}
                       </span>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <Badge variant="success" className="flex items-center gap-1 text-xs">
-                      <CheckCircle2 className="w-3 h-3" />
-                      Completed
-                    </Badge>
-                  </div>
+                  <span className="flex items-center gap-1 text-[var(--success-primary)] font-medium text-[11px] shrink-0 ml-2">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+                  </span>
                 </div>
               );
             })

@@ -133,62 +133,60 @@ export const DailyReportModal: React.FC<DailyReportModalProps> = ({
               return (
                 <div
                   key={item.date}
-                  className="p-4 rounded-2xl bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)] hover:border-[var(--border-prominent)] transition-all space-y-3"
+                  className="p-3 sm:p-3.5 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--border-subtle)]/80 hover:border-[var(--border-prominent)] transition-all space-y-2"
                 >
                   {/* Day Header */}
-                  <div className="flex items-center justify-between border-b border-[var(--border-subtle)]/70 pb-2">
-                    <div className="flex items-center gap-2">
-                      <Calendar className="w-4 h-4 text-indigo-400" />
-                      <span className="font-bold text-sm text-[var(--text-primary)]">
-                        {formatDateLabel(item.date)}
-                      </span>
+                  <div className="flex items-center justify-between text-xs font-bold text-[var(--text-primary)] pb-1.5 border-b border-[var(--border-subtle)]/50">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Calendar className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                      <span className="truncate">{formatDateLabel(item.date)}</span>
                       {isDayToday && (
-                        <span className="text-[10px] text-sky-400 font-semibold px-2 py-0.5 rounded-full bg-sky-500/10 border border-sky-500/20">
+                        <span className="text-[10px] text-sky-400 font-semibold px-2 py-0.5 rounded-full bg-sky-500/10 border border-sky-500/20 shrink-0">
                           Today
                         </span>
                       )}
                     </div>
-                    <Badge variant={isActive ? 'water' : 'neutral'}>
+                    <Badge variant={isActive ? 'water' : 'neutral'} className="text-[10px] tracking-wider uppercase font-mono shrink-0">
                       {isActive ? 'In progress' : 'Finalized'}
                     </Badge>
                   </div>
 
-                  {/* Day Breakdown Columns */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-0.5">
-                    {/* Water Intake */}
-                    <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]/60 space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-sky-400 flex items-center gap-1.5">
-                          <Droplets className="w-3.5 h-3.5" /> Water Intake
-                        </span>
+                  {/* Day Breakdown Columns (Side-by-side) */}
+                  <div className="grid grid-cols-2 gap-2.5 sm:gap-4 pt-0.5">
+                    {/* Water */}
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="text-[11px] text-sky-400 font-semibold flex items-center gap-1 mb-1 truncate">
+                        <Droplets className="w-3 h-3 shrink-0" /> Water
+                      </div>
+                      <div className="text-xs font-mono font-bold text-emerald-400 truncate">
+                        {item.waterCompleted} completed
                       </div>
                       {isActive ? (
-                        <div className="text-xs pt-1 font-mono font-bold text-[var(--text-primary)]">
-                          {item.waterCompleted} completed / {item.waterExpected} expected
+                        <div className="text-xs font-mono font-medium text-[var(--text-muted)] truncate">
+                          {item.waterExpected} expected
                         </div>
                       ) : (
-                        <div className="text-xs pt-1 font-mono space-y-0.5">
-                          <div className="font-bold text-emerald-400">{item.waterCompleted} completed</div>
-                          <div className="font-medium text-rose-400">{item.waterMissed} missed</div>
+                        <div className="text-xs font-mono font-medium text-rose-400 truncate">
+                          {item.waterMissed} missed
                         </div>
                       )}
                     </div>
 
                     {/* Look Outside */}
-                    <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]/60 space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-indigo-400 flex items-center gap-1.5">
-                          <Eye className="w-3.5 h-3.5" /> Look Outside
-                        </span>
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="text-[11px] text-indigo-400 font-semibold flex items-center gap-1 mb-1 truncate">
+                        <Eye className="w-3 h-3 shrink-0" /> Look Outside
+                      </div>
+                      <div className="text-xs font-mono font-bold text-emerald-400 truncate">
+                        {item.screenCompleted} completed
                       </div>
                       {isActive ? (
-                        <div className="text-xs pt-1 font-mono font-bold text-[var(--text-primary)]">
-                          {item.screenCompleted} completed / {item.screenExpected} expected
+                        <div className="text-xs font-mono font-medium text-[var(--text-muted)] truncate">
+                          {item.screenExpected} expected
                         </div>
                       ) : (
-                        <div className="text-xs pt-1 font-mono space-y-0.5">
-                          <div className="font-bold text-emerald-400">{item.screenCompleted} completed</div>
-                          <div className="font-medium text-rose-400">{item.screenMissed} missed</div>
+                        <div className="text-xs font-mono font-medium text-rose-400 truncate">
+                          {item.screenMissed} missed
                         </div>
                       )}
                     </div>
@@ -199,7 +197,7 @@ export const DailyReportModal: React.FC<DailyReportModalProps> = ({
           ) : (
             <div className="text-center py-12 text-[var(--text-muted)]">
               <FileText className="w-8 h-8 mx-auto mb-2 opacity-40" />
-              <p className="text-sm">No finalized days yet.</p>
+              <p className="text-sm">No daily records available.</p>
             </div>
           )}
         </div>

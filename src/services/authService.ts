@@ -8,6 +8,26 @@ import { storageEngine } from '../engine/storageEngine.ts';
 export const AUTH_STORAGE_KEY = 'pauseflow:v2:auth:session';
 export const LEGACY_AUTH_STORAGE_KEY = 'eyeflow:v2:auth:session';
 
+/** Production deployment URL for email confirmation redirects */
+export const PRODUCTION_URL = 'https://pauseflow-break-reminder-app.vercel.app';
+
+/**
+ * Returns the email confirmation redirect URL.
+ * - In local browser development (Vite dev server on localhost, not Capacitor native), allows local dev origin.
+ * - In production builds, deployed Vercel web app, and Android/Capacitor native builds, always pins to the live production Vercel URL.
+ */
+export function getConfirmationRedirectUrl(): string {
+  if (typeof window !== 'undefined') {
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const isCapacitor = (window as any).Capacitor?.isNativePlatform?.() || window.location.protocol === 'capacitor:';
+    if (isLocalhost && !isCapacitor && import.meta.env.DEV) {
+      return window.location.origin;
+    }
+  }
+  return PRODUCTION_URL;
+}
+
+
 export interface UserProfile {
   id: string;
   email: string;
@@ -24,6 +44,7 @@ export interface AuthResponse<T = any> {
   error: string | null;
   requiresEmailConfirmation?: boolean;
   isRateLimited?: boolean;
+  isEmailRateLimited?: boolean;
 }
 
 export class AuthService {
@@ -32,7 +53,26 @@ export class AuthService {
   private isRefreshingToken = false;
 
   /**
-   * Checks if an error is an authentication rate limit error
+   * Checks if an error is specifically an email delivery provider rate limit
+   */
+  public isEmailRateLimitError(err: any): boolean {
+    if (!err) return false;
+    const msg = typeof err === 'string' ? err : err.message || '';
+    const code = err?.code || '';
+    const lower = msg.toLowerCase();
+
+    return (
+      code === 'over_email_send_rate_limit' ||
+      code === 'email_rate_limit_exceeded' ||
+      lower.includes('over_email_send_rate_limit') ||
+      lower.includes('email_rate_limit_exceeded') ||
+      lower.includes('email rate limit') ||
+      lower.includes('over email send rate limit')
+    );
+  }
+
+  /**
+   * Checks if an error is any authentication or request rate limit error
    */
   public isRateLimitError(err: any): boolean {
     if (!err) return false;
@@ -45,11 +85,10 @@ export class AuthService {
       status === 429 ||
       code === 'over_request_rate_limit' ||
       code === 'too_many_requests' ||
-      code === 'email_rate_limit_exceeded' ||
-      code === 'over_email_send_rate_limit' ||
+      this.isEmailRateLimitError(err) ||
       lower.includes('rate limit') ||
       lower.includes('too many') ||
-      lower.includes('email rate limit')
+      lower.includes('too many requests')
     );
   }
 
@@ -72,8 +111,12 @@ export class AuthService {
     const code = err?.code || '';
     const lower = msg.toLowerCase();
 
+    if (this.isEmailRateLimitError(err)) {
+      return "Email service temporarily unavailable. We couldn't send the confirmation email right now. Please try again later. If you already created an account, check your inbox or log in.";
+    }
+
     if (this.isRateLimitError(err)) {
-      return 'Too many signup attempts. Please wait a few minutes before trying again.';
+      return 'Too many attempts. Please wait a moment before trying again.';
     }
 
     if (
@@ -180,7 +223,7 @@ export class AuthService {
   }
 
   /**
-   * Register a new user with Supabase Auth with single-flight deduplication
+   * Register a new user with Supabase Auth with single-flight deduplication and diagnostic tracking
    */
   public async signUp(
     email: string,
@@ -192,6 +235,9 @@ export class AuthService {
       return this.inFlightSignUpPromise;
     }
 
+    const signupRequestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    console.log(`[PauseFlow][AUTH] stage=SIGNUP_START requestId=${signupRequestId} emailDomain=${email.includes('@') ? email.split('@')[1] : 'unknown'}`);
+
     this.inFlightSignUpPromise = (async () => {
       try {
         const cleanEmail = email.trim().toLowerCase();
@@ -202,25 +248,34 @@ export class AuthService {
           email: cleanEmail,
           password,
           options: {
+            emailRedirectTo: getConfirmationRedirectUrl(),
             data: {
               display_name: cleanName,
+              name: cleanName,
+              full_name: cleanName,
               timezone,
             },
           },
         });
 
         if (error) {
+          const isRateLimit = this.isRateLimitError(error);
+          const isEmailRateLimit = this.isEmailRateLimitError(error);
+          console.error(`[PauseFlow][AUTH] stage=SIGNUP_RESPONSE requestId=${signupRequestId} success=false status=${(error as any)?.status || 400} code=${(error as any)?.code || 'unknown'} message=${error.message}`);
           return {
             data: null,
             user: null,
             session: null,
             error: this.formatAuthError(error),
-            isRateLimited: this.isRateLimitError(error),
+            isRateLimited: isRateLimit,
+            isEmailRateLimited: isEmailRateLimit,
           };
         }
 
         const userProfile = data.user ? this.toUserProfile(data.user) : null;
         const requiresEmailConfirmation = !data.session && Boolean(data.user);
+
+        console.log(`[PauseFlow][AUTH] stage=SIGNUP_RESPONSE requestId=${signupRequestId} success=true requiresConfirmation=${requiresEmailConfirmation} userId=${data.user?.id || 'none'}`);
 
         return {
           data: { user: data.user, session: data.session },
@@ -229,14 +284,19 @@ export class AuthService {
           error: null,
           requiresEmailConfirmation,
           isRateLimited: false,
+          isEmailRateLimited: false,
         };
       } catch (err: any) {
+        const isRateLimit = this.isRateLimitError(err);
+        const isEmailRateLimit = this.isEmailRateLimitError(err);
+        console.error(`[PauseFlow][AUTH] stage=SIGNUP_ERROR requestId=${signupRequestId} message=${err?.message || err}`);
         return {
           data: null,
           user: null,
           session: null,
           error: this.formatAuthError(err),
-          isRateLimited: this.isRateLimitError(err),
+          isRateLimited: isRateLimit,
+          isEmailRateLimited: isEmailRateLimit,
         };
       } finally {
         this.inFlightSignUpPromise = null;
@@ -485,7 +545,7 @@ export class AuthService {
     try {
       const cleanEmail = email.trim().toLowerCase();
       const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
-        redirectTo: redirectTo || (typeof window !== 'undefined' ? window.location.origin : undefined),
+        redirectTo: redirectTo || getConfirmationRedirectUrl(),
       });
       if (error) {
         return { error: this.formatAuthError(error) };
@@ -528,20 +588,28 @@ export class AuthService {
   }
 
   /**
-   * Resend confirmation / verification email
+   * Resend confirmation / verification email with error formatting and rate limit classification
    */
-  public async sendVerification(email: string): Promise<{ error: string | null }> {
+  public async sendVerification(email: string): Promise<{ error: string | null; isRateLimited?: boolean; isEmailRateLimited?: boolean }> {
     try {
       const { error } = await supabase.auth.resend({
         type: 'signup',
         email: email.trim().toLowerCase(),
       });
       if (error) {
-        return { error: this.formatAuthError(error) };
+        return {
+          error: this.formatAuthError(error),
+          isRateLimited: this.isRateLimitError(error),
+          isEmailRateLimited: this.isEmailRateLimitError(error),
+        };
       }
-      return { error: null };
+      return { error: null, isRateLimited: false, isEmailRateLimited: false };
     } catch (err: any) {
-      return { error: this.formatAuthError(err) };
+      return {
+        error: this.formatAuthError(err),
+        isRateLimited: this.isRateLimitError(err),
+        isEmailRateLimited: this.isEmailRateLimitError(err),
+      };
     }
   }
 

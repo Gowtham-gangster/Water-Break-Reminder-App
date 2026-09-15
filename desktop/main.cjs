@@ -585,9 +585,9 @@ function createMainWindow() {
   });
 }
 
-// Authoritative lifecycle completion function
+// Desktop reminder presentation completion function (Presentation-only: does NOT author database completion)
 function completeActiveReminderItem(type, slotId, isPreview) {
-  console.log(`[Reminder] COMPLETE: ${type} (${slotId})`);
+  console.log(`[Reminder] DESKTOP_DISMISSED: ${type} (${slotId}) [desktop_triggered != completed]`);
 
   // Clear native timer for this slot
   if (activeReminderTimersMap.has(slotId)) {
@@ -596,19 +596,13 @@ function completeActiveReminderItem(type, slotId, isPreview) {
   }
 
   if (!isPreview) {
-    if (type === 'water') {
-      scheduler.todayCompletedWater.push({ id: slotId, time: new Date().toLocaleTimeString() });
-    } else {
-      scheduler.todayCompletedScreen.push({ id: slotId, time: new Date().toLocaleTimeString() });
-    }
-    console.log(`[Reminder] LOGGED: ${type} ${slotId}`);
     scheduler.reschedule();
 
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('native-reminder-completed', {
+      mainWindow.webContents.send('native-reminder-expired', {
         type,
         slotId,
-        completedAt: new Date().toISOString(),
+        dismissedAt: new Date().toISOString(),
       });
     }
   }

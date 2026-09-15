@@ -8,6 +8,7 @@ import {
   Calendar,
 } from 'lucide-react';
 import { calculateAuthoritativeExpected, isScheduleWindowActive } from '../services/reminderService';
+import { formatUserTime } from '../utils/timeFormat';
 
 const DAYS_OF_WEEK = [
   { id: 1, label: 'Mon', full: 'Monday' },
@@ -25,6 +26,7 @@ export const LookOutsidePage: React.FC = () => {
     setScreenBreakConfig,
     nextScreenSlot,
     screenCompletedCount,
+    generalSettings,
   } = useApp();
 
   const { showToast } = useToast();
@@ -165,7 +167,7 @@ export const LookOutsidePage: React.FC = () => {
           </span>
           <div className="flex items-baseline gap-2">
             <span className="text-3xl sm:text-4xl font-black text-[var(--text-primary)] font-mono">
-              {formData.enabled && nextScreenSlot ? nextScreenSlot.time : 'Paused'}
+              {formData.enabled && nextScreenSlot ? formatUserTime(nextScreenSlot.time, generalSettings.timeFormat, generalSettings.timezone) : 'Paused'}
             </span>
             {formData.enabled && nextScreenSlot && (
               <span className="text-xs font-semibold text-[var(--screen-primary)]">
@@ -256,6 +258,7 @@ export const LookOutsidePage: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           <TimePicker
             label="Start time"
+            timeFormat={generalSettings.timeFormat}
             value={formData.startTime}
             onChange={(e) => setFormData({ ...formData, startTime: e.target.value })}
             helperText="Arbitrary start time (e.g. 08:13, 09:47, 13:26)."
@@ -263,6 +266,7 @@ export const LookOutsidePage: React.FC = () => {
 
           <TimePicker
             label="End time"
+            timeFormat={generalSettings.timeFormat}
             value={formData.endTime}
             onChange={(e) => setFormData({ ...formData, endTime: e.target.value })}
             helperText="Arbitrary end time (e.g. 17:53, 22:11)."

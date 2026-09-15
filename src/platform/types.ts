@@ -15,7 +15,7 @@ export interface PlatformCapabilities {
 export interface NotificationPayload {
   title: string;
   body: string;
-  category: 'water' | 'screen';
+  category: 'water' | 'screen' | 'daily_summary';
   slotId?: string;
   sound?: boolean;
 }
@@ -25,7 +25,7 @@ export interface ScheduledNotification {
   userId?: string;
   title: string;
   body: string;
-  category: 'water' | 'screen';
+  category: 'water' | 'screen' | 'daily_summary';
   scheduledTimestamp: number;
   durationSeconds: number;
 }

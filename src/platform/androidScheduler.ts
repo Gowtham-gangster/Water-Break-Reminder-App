@@ -6,6 +6,7 @@ import { reminderService, isDateOnOrAfterAccountCreation } from '../services/rem
 // Native PauseFlow Android Plugin Interface
 export interface PauseFlowNativePluginInterface {
   scheduleExactReminderAlarms(options: {
+    userId: string;
     alarms: Array<{
       eventId: string;
       category: string;
@@ -15,8 +16,8 @@ export interface PauseFlowNativePluginInterface {
       scheduledTimestamp: number;
       durationSeconds: number;
     }>;
-  }): Promise<{ scheduledCount: number }>;
-  cancelExactReminderAlarms(): Promise<void>;
+  }): Promise<{ scheduledCount: number; canScheduleExactAlarms?: boolean }>;
+  cancelExactReminderAlarms(options?: { userId?: string }): Promise<void>;
   checkExactAlarmPermission(): Promise<{
     canScheduleExactAlarms: boolean;
     isExactAlarmSupported: boolean;
@@ -32,20 +33,26 @@ export interface PauseFlowNativePluginInterface {
   recordDeliveredReminder(options: {
     eventId: string;
     category: string;
-    userId?: string;
+    userId: string;
     timestamp?: number;
+    scheduledTimestamp?: number;
   }): Promise<void>;
-  getDeliveredReminders(): Promise<{
+  getDeliveredReminders(options?: { userId?: string }): Promise<{
     deliveredReminders: Array<{
       eventId: string;
       category: string;
       userId: string;
       timestamp: number;
       scheduledTimestamp?: number;
+      date?: string;
+      time?: string;
+      scheduledAt?: string;
+      deliveredAt?: string;
+      status?: string;
     }>;
     error?: string;
   }>;
-  clearDeliveredReminders(): Promise<void>;
+  clearDeliveredReminders(options?: { userId?: string }): Promise<void>;
   getNativeDiagnostics(): Promise<{
     platform: string;
     sdkInt: number;
@@ -206,10 +213,10 @@ class AndroidSchedulerService {
     }
   }
 
-  async cancelAllReminders(): Promise<void> {
+  async cancelAllReminders(userId?: string): Promise<void> {
     try {
       // 1. Cancel Native Exact Alarms
-      await PauseFlowNative.cancelExactReminderAlarms();
+      await PauseFlowNative.cancelExactReminderAlarms({ userId });
 
       // 2. Cancel Capacitor Local Notifications
       const pending = await LocalNotifications.getPending();
@@ -225,8 +232,8 @@ class AndroidSchedulerService {
   }
 
   async pause(userId?: string): Promise<void> {
-    console.log(`[AndroidScheduler] Pausing reminders for user ${userId || 'default'}...`);
-    await this.cancelAllReminders();
+    console.log(`[AndroidScheduler] Pausing reminders for user ${userId || 'anonymous'}...`);
+    await this.cancelAllReminders(userId);
     if (typeof localStorage !== 'undefined' && userId) {
       try {
         localStorage.removeItem(this.getScheduledRemindersKey(userId));
@@ -235,7 +242,7 @@ class AndroidSchedulerService {
   }
 
   async resume(userId?: string): Promise<void> {
-    console.log(`[AndroidScheduler] Resuming reminders for user ${userId || 'default'}...`);
+    console.log(`[AndroidScheduler] Resuming reminders for user ${userId || 'anonymous'}...`);
   }
 
   private lastScheduledFingerprint = '';
@@ -249,7 +256,16 @@ class AndroidSchedulerService {
     try {
       const now = Date.now();
       const futureNotifications = notifications.filter((n) => n.scheduledTimestamp > now + 500);
-      const userId = notifications[0]?.userId || 'default';
+      const userId = notifications[0]?.userId;
+
+      // CRITICAL AUTHENTICATION CHECK
+      if (!userId || userId === 'default_user' || userId === 'local_user') {
+        console.warn('[PauseFlow][SECURITY] stage=ANONYMOUS_SCHEDULER_BLOCKED reason=empty_or_anonymous_user');
+        await this.cancelAllReminders();
+        this.lastScheduledFingerprint = '';
+        this.lastSchedulingResult = 'Blocked anonymous scheduler';
+        return { scheduledCount: 0, error: 'Cannot schedule reminders for unauthenticated user' };
+      }
 
       const fingerprint = `${userId}|` + futureNotifications.map((n) => `${n.id}:${n.scheduledTimestamp}`).join('|');
       if (!force && fingerprint === this.lastScheduledFingerprint && futureNotifications.length > 0) {
@@ -257,7 +273,7 @@ class AndroidSchedulerService {
         return { scheduledCount: futureNotifications.length, error: null };
       }
 
-      await this.cancelAllReminders();
+      await this.cancelAllReminders(userId);
 
       if (futureNotifications.length === 0) {
         this.lastScheduledFingerprint = '';
@@ -265,30 +281,33 @@ class AndroidSchedulerService {
         return { scheduledCount: 0, error: null };
       }
 
-      console.log(`[PauseFlow][Schedule] Scheduling ${futureNotifications.length} alarms for user ${userId}`);
+      console.log(`[PauseFlow][Schedule] Scheduling ${futureNotifications.length} rolling future alarms for user ${userId}`);
 
-      for (const n of futureNotifications) {
-        console.log(`[PauseFlow][TRACE] stage=SCHEDULE_START eventId=${n.id} scheduledLocal=${new Date(n.scheduledTimestamp).toLocaleTimeString()} scheduledEpoch=${n.scheduledTimestamp} currentEpoch=${now} timezone=${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+      for (const n of futureNotifications.slice(0, 10)) {
+        console.log(`[PauseFlow][TRACE] stage=SCHEDULE_START eventId=${n.id} userId=${userId} scheduledLocal=${new Date(n.scheduledTimestamp).toLocaleTimeString()} scheduledEpoch=${n.scheduledTimestamp} currentEpoch=${now} timezone=${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
       }
 
       // 1. Schedule Native Exact Alarms targeting PauseFlowNotificationReceiver
       // Guarantees execution in background, screen-locked, foreground, and app-process-killed states
       const nativeAlarms = futureNotifications.map((n) => {
+        const isSummary = n.category === 'daily_summary';
         const isWater = n.category === 'water';
         return {
           eventId: n.id,
           category: n.category,
           userId: n.userId || userId,
-          title: isWater ? '💧 Time for water' : '👁 Look outside',
-          body: isWater
+          title: isSummary ? "Today's Progress" : isWater ? '💧 Time for water' : '👁 Look outside',
+          body: isSummary
+            ? "Today's Progress"
+            : isWater
             ? 'Take a short break and drink some water.'
             : 'Give your eyes a short break from the screen.',
           scheduledTimestamp: n.scheduledTimestamp,
-          durationSeconds: n.durationSeconds || (isWater ? 120 : 300),
+          durationSeconds: isSummary ? 0 : n.durationSeconds || (isWater ? 120 : 300),
         };
       });
 
-      const nativeRes = await PauseFlowNative.scheduleExactReminderAlarms({ alarms: nativeAlarms });
+      const nativeRes = await PauseFlowNative.scheduleExactReminderAlarms({ userId, alarms: nativeAlarms });
       this.lastScheduledFingerprint = fingerprint;
 
       // 2. Persist scheduled notification inventory for UI display and reconciliation
@@ -312,7 +331,7 @@ class AndroidSchedulerService {
       this.lastSchedulingResult = `Scheduled ${nativeRes.scheduledCount} native exact alarms at ${new Date().toLocaleTimeString()}`;
       this.lastSchedulingError = null;
 
-      console.log(`[PauseFlow][Alarm] scheduled count=${nativeRes.scheduledCount}`);
+      console.log(`[PauseFlow][Alarm] scheduled count=${nativeRes.scheduledCount} for user=${userId}`);
 
       return { scheduledCount: nativeRes.scheduledCount, error: null };
     } catch (e: any) {
@@ -326,7 +345,7 @@ class AndroidSchedulerService {
 
   /**
    * Reconcile delivered reminders:
-   * Processes verified delivery records written to Android SharedPreferences
+   * Processes verified delivery records written to Android user-scoped SharedPreferences
    * by the native PauseFlowNotificationReceiver BroadcastReceiver when the alarm fired.
    * Runs on app startup, foregrounding, and network restoration.
    */
@@ -335,14 +354,14 @@ class AndroidSchedulerService {
     accountCreatedAt?: string,
     timeZone?: string
   ): Promise<number> {
-    if (!userId) return 0;
+    if (!userId || userId === 'default_user' || userId === 'local_user') return 0;
     let reconciledCount = 0;
     const now = Date.now();
 
     try {
-      // 1. Process Authoritative Android Native Delivery Records from SharedPreferences
+      // 1. Process Authoritative Android Native Delivery Records from user-scoped SharedPreferences
       try {
-        const nativeRes = await PauseFlowNative.getDeliveredReminders();
+        const nativeRes = await PauseFlowNative.getDeliveredReminders({ userId });
         if (nativeRes?.deliveredReminders && nativeRes.deliveredReminders.length > 0) {
           console.log(`[PauseFlow][TRACE] stage=STARTUP_RECONCILIATION userId=${userId} totalDelivered=${nativeRes.deliveredReminders.length}`);
           for (const item of nativeRes.deliveredReminders) {
@@ -360,11 +379,11 @@ class AndroidSchedulerService {
                 new Date(scheduledTs).toISOString()
               );
               reconciledCount++;
-              console.log(`[PauseFlow][TRACE] stage=RECONCILED_EVENT eventId=${item.eventId} category=${category} status=completed`);
+              console.log(`[PauseFlow][TRACE] stage=RECONCILED_EVENT eventId=${item.eventId} category=${category} userId=${targetUserId} status=completed`);
             }
           }
-          await PauseFlowNative.clearDeliveredReminders();
-          console.log(`[AndroidScheduler] Reconciled ${reconciledCount} verified native delivery records`);
+          await PauseFlowNative.clearDeliveredReminders({ userId });
+          console.log(`[AndroidScheduler] Reconciled ${reconciledCount} verified native delivery records for user ${userId}`);
         }
       } catch (nativeErr) {
         console.warn('[AndroidScheduler] Error querying native delivered reminders:', nativeErr);
@@ -464,13 +483,13 @@ class AndroidSchedulerService {
         const completed = options.todayWaterCompleted ?? 0;
         const expected = options.todayWaterExpected ?? 0;
         const missed = Math.max(0, expected - completed);
-        lines.push(`Today: Water ${completed} completed, ${missed} missed.`);
+        lines.push(`💧 Water: ${completed} completed • ${missed} missed`);
       }
       if (screenActive) {
         const completed = options.todayScreenCompleted ?? 0;
         const expected = options.todayScreenExpected ?? 0;
         const missed = Math.max(0, expected - completed);
-        lines.push(`Look Outside ${completed} completed, ${missed} missed.`);
+        lines.push(`👁 Look Outside: ${completed} completed • ${missed} missed`);
       }
 
       const summaryBody = lines.join('\n');
@@ -479,7 +498,7 @@ class AndroidSchedulerService {
         notifications: [
           {
             id: summaryIntId,
-            title: 'PauseFlow — Daily Summary',
+            title: "Today's Progress",
             body: summaryBody,
             channelId: 'pauseflow_summary_channel',
             smallIcon: 'pauseflow_notification',
@@ -506,47 +525,6 @@ class AndroidSchedulerService {
     }
   }
 
-  async scheduleTestReminder(
-    secondsFromNow: number = 30,
-    type: 'water' | 'screen' = 'water',
-    userId: string = 'local_user'
-  ): Promise<{
-    success: boolean;
-    id: number;
-    timestamp: number;
-    error?: string;
-  }> {
-    await this.initChannels();
-
-    try {
-      const scheduledTimestamp = Date.now() + secondsFromNow * 1000;
-      const eventId = `test-${type}-${Date.now()}`;
-      const isWater = type === 'water';
-
-      await PauseFlowNative.scheduleExactReminderAlarms({
-        alarms: [
-          {
-            eventId,
-            category: type,
-            userId,
-            title: isWater ? '💧 Time for water' : '👁 Look outside',
-            body: isWater
-              ? 'Take a short break and drink some water.'
-              : 'Give your eyes a short break from the screen.',
-            scheduledTimestamp,
-            durationSeconds: isWater ? 120 : 300,
-          },
-        ],
-      });
-
-      console.log(`[AndroidScheduler] Scheduled test reminder for +${secondsFromNow}s (EventId: ${eventId})`);
-      return { success: true, id: this.hashStringToInt(eventId), timestamp: scheduledTimestamp };
-    } catch (e: any) {
-      const errMsg = `Test schedule error: ${e?.message || e}`;
-      console.error('[AndroidScheduler]', errMsg);
-      return { success: false, id: 0, timestamp: 0, error: errMsg };
-    }
-  }
 
   async getDiagnostics(): Promise<AndroidSchedulerDiagnostics> {
     let nativeDiag: any = {

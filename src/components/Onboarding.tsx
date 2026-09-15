@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import { Card, Button, Select, TimePicker } from './ui';
 import { Droplets, Eye, ArrowRight, CheckCircle2, Sparkles, Check, Bell } from 'lucide-react';
 import { notificationEngine } from '../engine/notificationEngine';
+import { formatUserTime } from '../utils/timeFormat';
 
 const DAYS_OF_WEEK = [
   { day: 1, label: 'Mon', full: 'Monday' },
@@ -21,6 +22,7 @@ export const Onboarding: React.FC = () => {
     screenBreakConfig,
     setScreenBreakConfig,
     completeOnboarding,
+    generalSettings,
   } = useApp();
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -66,35 +68,27 @@ export const Onboarding: React.FC = () => {
   const handleFinish = async () => {
     setSaving(true);
     try {
-      // 1. Save Water Configuration
+      await notificationEngine.requestPermission();
       await setWaterConfig({
         ...waterConfig,
         enabled: waterEnabled,
+        intervalMinutes: waterInterval,
         startTime: waterStartTime,
         endTime: waterEndTime,
-        intervalMinutes: waterInterval,
         durationMinutes: waterDuration,
         activeDays: waterDays,
       });
-
-      // 2. Save Look Outside Configuration
       await setScreenBreakConfig({
         ...screenBreakConfig,
         enabled: screenEnabled,
+        screenIntervalMinutes: screenInterval,
         startTime: screenStartTime,
         endTime: screenEndTime,
-        screenIntervalMinutes: screenInterval,
         breakDurationMinutes: screenDuration,
         activeDays: screenDays,
       });
-
-      // 3. Request permissions & trigger background scheduler
-      await notificationEngine.requestPermission();
-
-      // 4. Mark onboarding complete -> leads directly to Dashboard
       await completeOnboarding();
-    } catch (e) {
-      console.warn('[Onboarding] Error finalizing setup:', e);
+    } catch (_) {
       await completeOnboarding();
     } finally {
       setSaving(false);
@@ -192,11 +186,13 @@ export const Onboarding: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <TimePicker
                   label="Start"
+                  timeFormat={generalSettings.timeFormat}
                   value={waterStartTime}
                   onChange={(e) => setWaterStartTime(e.target.value)}
                 />
                 <TimePicker
                   label="End"
+                  timeFormat={generalSettings.timeFormat}
                   value={waterEndTime}
                   onChange={(e) => setWaterEndTime(e.target.value)}
                 />
@@ -313,11 +309,13 @@ export const Onboarding: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <TimePicker
                   label="Start"
+                  timeFormat={generalSettings.timeFormat}
                   value={screenStartTime}
                   onChange={(e) => setScreenStartTime(e.target.value)}
                 />
                 <TimePicker
                   label="End"
+                  timeFormat={generalSettings.timeFormat}
                   value={screenEndTime}
                   onChange={(e) => setScreenEndTime(e.target.value)}
                 />
@@ -404,11 +402,11 @@ export const Onboarding: React.FC = () => {
             <div className="p-4 rounded-2xl bg-[var(--bg-tertiary)]/50 border border-[var(--border-subtle)] text-left space-y-2 text-xs text-[var(--text-secondary)]">
               <div className="flex items-center gap-2">
                 <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Water reminders every <strong>{waterInterval} mins</strong> ({waterStartTime} - {waterEndTime})</span>
+                <span>Water reminders every <strong>{waterInterval} mins</strong> ({formatUserTime(waterStartTime, generalSettings.timeFormat, generalSettings.timezone)} - {formatUserTime(waterEndTime, generalSettings.timeFormat, generalSettings.timezone)})</span>
               </div>
               <div className="flex items-center gap-2">
                 <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Look Outside breaks every <strong>{screenInterval} mins</strong> ({screenStartTime} - {screenEndTime})</span>
+                <span>Look Outside breaks every <strong>{screenInterval} mins</strong> ({formatUserTime(screenStartTime, generalSettings.timeFormat, generalSettings.timezone)} - {formatUserTime(screenEndTime, generalSettings.timeFormat, generalSettings.timezone)})</span>
               </div>
               <div className="flex items-center gap-2">
                 <Bell className="w-4 h-4 text-sky-400 shrink-0" />

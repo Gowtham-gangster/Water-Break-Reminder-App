@@ -25,10 +25,26 @@ public class PauseFlowNativePlugin extends Plugin {
     private static final String TAG = "PauseFlowNativePlugin";
     private static WeakReference<PauseFlowNativePlugin> instanceRef;
 
-    public static final String PREFS_SCHEDULED = "pauseflow_scheduled_alarms";
+    public static final String LEGACY_PREFS_SCHEDULED = "pauseflow_scheduled_alarms";
+    public static final String LEGACY_PREFS_DELIVERED = "pauseflow_delivered_reminders";
+    public static final String PREFS_ACTIVE_USER = "pauseflow_active_session";
+    public static final String KEY_ACTIVE_USER_ID = "active_user_id";
     public static final String KEY_SCHEDULED_LIST = "scheduled_list";
-    public static final String PREFS_DELIVERED = "pauseflow_delivered_reminders";
     public static final String KEY_DELIVERED_LIST = "delivered_list";
+
+    public static String getScheduledPrefsName(String userId) {
+        if (userId == null || userId.trim().isEmpty() || "default_user".equals(userId) || "local_user".equals(userId)) {
+            return null;
+        }
+        return "pauseflow_user_" + userId.trim() + "_scheduled_alarms";
+    }
+
+    public static String getDeliveredPrefsName(String userId) {
+        if (userId == null || userId.trim().isEmpty() || "default_user".equals(userId) || "local_user".equals(userId)) {
+            return null;
+        }
+        return "pauseflow_user_" + userId.trim() + "_delivered_reminders";
+    }
 
     @Override
     public void load() {
@@ -36,6 +52,24 @@ public class PauseFlowNativePlugin extends Plugin {
         instanceRef = new WeakReference<>(this);
         Log.i(TAG, "[PauseFlow][Bridge] PauseFlowNativePlugin loaded. Bridge attached.");
         PauseFlowNotificationReceiver.ensureNotificationChannels(getContext());
+        cleanupLegacyGlobalPrefs(getContext());
+    }
+
+    public static void cleanupLegacyGlobalPrefs(Context context) {
+        try {
+            SharedPreferences legacySched = context.getSharedPreferences(LEGACY_PREFS_SCHEDULED, Context.MODE_PRIVATE);
+            if (legacySched.contains(KEY_SCHEDULED_LIST)) {
+                legacySched.edit().clear().commit();
+                Log.i(TAG, "[PauseFlow][Cleanup] Cleared legacy global scheduled alarms");
+            }
+            SharedPreferences legacyDeliv = context.getSharedPreferences(LEGACY_PREFS_DELIVERED, Context.MODE_PRIVATE);
+            if (legacyDeliv.contains(KEY_DELIVERED_LIST)) {
+                legacyDeliv.edit().clear().commit();
+                Log.i(TAG, "[PauseFlow][Cleanup] Cleared legacy global delivered reminders");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "[PauseFlow][Cleanup] Legacy cleanup warning: " + e.getMessage());
+        }
     }
 
     public static void notifyLiveReminderDelivered(
@@ -91,8 +125,17 @@ public class PauseFlowNativePlugin extends Plugin {
     public void scheduleExactReminderAlarms(PluginCall call) {
         try {
             JSArray alarms = call.getArray("alarms");
+            String activeUserId = call.getString("userId", "");
+
             if (alarms == null) {
                 call.reject("alarms parameter is required");
+                return;
+            }
+
+            // CRITICAL AUTHENTICATION GUARD
+            if (activeUserId == null || activeUserId.trim().isEmpty() || "default_user".equals(activeUserId) || "local_user".equals(activeUserId)) {
+                Log.w(TAG, "[PauseFlow][SECURITY] stage=ANONYMOUS_SCHEDULER_BLOCKED reason=unauthenticated_user activeUserId=" + activeUserId);
+                call.reject("Cannot schedule reminder alarms for unauthenticated or anonymous user");
                 return;
             }
 
@@ -109,36 +152,44 @@ public class PauseFlowNativePlugin extends Plugin {
             }
             Log.i(TAG, "[PauseFlow][TRACE] stage=PERMISSION_CHECK canScheduleExactAlarms=" + canSchedule);
 
+            // Cancel any previously scheduled alarms for this user before scheduling new ones
+            internalCancelAlarmsForUser(context, activeUserId);
+
             long now = System.currentTimeMillis();
-            SharedPreferences prefs = context.getSharedPreferences(PREFS_SCHEDULED, Context.MODE_PRIVATE);
+            String userPrefsName = getScheduledPrefsName(activeUserId);
+            SharedPreferences prefs = context.getSharedPreferences(userPrefsName, Context.MODE_PRIVATE);
             JSONArray storedArray = new JSONArray();
 
             java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", java.util.Locale.getDefault());
-            String nowStr = sdf.format(new java.util.Date(now));
-
             int scheduledCount = 0;
 
             for (int i = 0; i < alarms.length(); i++) {
                 JSONObject item = alarms.getJSONObject(i);
                 String eventId = item.optString("eventId");
                 String category = item.optString("category", "water");
-                String userId = item.optString("userId", "");
+                String itemUserId = item.optString("userId", activeUserId);
                 String title = item.optString("title", "");
                 String body = item.optString("body", "");
                 long scheduledTimestamp = item.optLong("scheduledTimestamp", 0);
                 int durationSeconds = item.optInt("durationSeconds", 120);
 
+                // Enforce that each alarm strictly matches the authenticated active user
+                if (!activeUserId.equals(itemUserId)) {
+                    Log.w(TAG, "[PauseFlow][SECURITY] stage=ANONYMOUS_SCHEDULER_BLOCKED reason=user_id_mismatch alarmUser=" + itemUserId + " activeUser=" + activeUserId);
+                    continue;
+                }
+
                 if (scheduledTimestamp > now + 1000) {
                     int requestCode = (eventId.hashCode() & 0x7fffffff);
                     String triggerStr = sdf.format(new java.util.Date(scheduledTimestamp));
 
-                    Log.i(TAG, "[PauseFlow][TRACE] stage=ALARM_REGISTERED eventId=" + eventId + " triggerEpoch=" + scheduledTimestamp + " (" + triggerStr + ") requestCode=" + requestCode + " diffMs=" + (scheduledTimestamp - now));
+                    Log.i(TAG, "[PauseFlow][TRACE] stage=ALARM_REGISTERED eventId=" + eventId + " userId=" + activeUserId + " triggerEpoch=" + scheduledTimestamp + " (" + triggerStr + ") requestCode=" + requestCode);
 
                     Intent intent = new Intent(context, PauseFlowNotificationReceiver.class);
                     intent.setAction(PauseFlowNotificationReceiver.ACTION_REMINDER_ALARM);
                     intent.putExtra(PauseFlowNotificationReceiver.EXTRA_EVENT_ID, eventId);
                     intent.putExtra(PauseFlowNotificationReceiver.EXTRA_CATEGORY, category);
-                    intent.putExtra(PauseFlowNotificationReceiver.EXTRA_USER_ID, userId);
+                    intent.putExtra(PauseFlowNotificationReceiver.EXTRA_USER_ID, activeUserId);
                     intent.putExtra(PauseFlowNotificationReceiver.EXTRA_TITLE, title);
                     intent.putExtra(PauseFlowNotificationReceiver.EXTRA_BODY, body);
                     intent.putExtra(PauseFlowNotificationReceiver.EXTRA_SCHEDULED_TIMESTAMP, scheduledTimestamp);
@@ -162,7 +213,14 @@ public class PauseFlowNativePlugin extends Plugin {
             }
 
             prefs.edit().putString(KEY_SCHEDULED_LIST, storedArray.toString()).commit();
-            Log.i(TAG, "[PauseFlow][Delivery] Successfully scheduled " + scheduledCount + " native exact reminder alarms");
+
+            // Record active user ID for boot receiver recovery
+            context.getSharedPreferences(PREFS_ACTIVE_USER, Context.MODE_PRIVATE)
+                   .edit()
+                   .putString(KEY_ACTIVE_USER_ID, activeUserId)
+                   .commit();
+
+            Log.i(TAG, "[PauseFlow][Delivery] Successfully scheduled " + scheduledCount + " user-scoped exact reminder alarms for userId=" + activeUserId);
 
             JSObject ret = new JSObject();
             ret.put("scheduledCount", scheduledCount);
@@ -174,12 +232,14 @@ public class PauseFlowNativePlugin extends Plugin {
         }
     }
 
-    @PluginMethod
-    public void cancelExactReminderAlarms(PluginCall call) {
+    private static void internalCancelAlarmsForUser(Context context, String userId) {
+        if (userId == null || userId.isEmpty()) return;
         try {
-            Context context = getContext();
             AlarmManager alarmManager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
-            SharedPreferences prefs = context.getSharedPreferences(PREFS_SCHEDULED, Context.MODE_PRIVATE);
+            String prefsName = getScheduledPrefsName(userId);
+            if (prefsName == null) return;
+
+            SharedPreferences prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE);
             String json = prefs.getString(KEY_SCHEDULED_LIST, "[]");
             JSONArray array = new JSONArray(json);
 
@@ -199,14 +259,48 @@ public class PauseFlowNativePlugin extends Plugin {
                         if (pendingIntent != null) {
                             alarmManager.cancel(pendingIntent);
                             pendingIntent.cancel();
-                            Log.i(TAG, "[PauseFlow][TRACE] stage=ALARM_CANCELLED eventId=" + eventId + " reason=reschedule_or_clear");
+                            Log.i(TAG, "[PauseFlow][TRACE] stage=ALARM_CANCELLED eventId=" + eventId + " userId=" + userId);
+                        }
+
+                        // Also cancel legacy showPendingIntent from earlier setAlarmClock calls
+                        Intent showIntent = new Intent(context, MainActivity.class);
+                        int showFlags = PendingIntent.FLAG_NO_CREATE;
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            showFlags |= PendingIntent.FLAG_IMMUTABLE;
+                        }
+                        PendingIntent showPendingIntent = PendingIntent.getActivity(context, requestCode, showIntent, showFlags);
+                        if (showPendingIntent != null) {
+                            showPendingIntent.cancel();
                         }
                     }
                 }
             }
-
             prefs.edit().remove(KEY_SCHEDULED_LIST).commit();
-            Log.i(TAG, "[PauseFlow][Delivery] Cancelled all native exact reminder alarms");
+        } catch (Exception e) {
+            Log.e(TAG, "[PauseFlow][Delivery] internalCancelAlarmsForUser error for userId=" + userId, e);
+        }
+    }
+
+    @PluginMethod
+    public void cancelExactReminderAlarms(PluginCall call) {
+        try {
+            Context context = getContext();
+            String userId = call.getString("userId", "");
+
+            if (userId != null && !userId.isEmpty() && !"default_user".equals(userId) && !"local_user".equals(userId)) {
+                internalCancelAlarmsForUser(context, userId);
+            } else {
+                // If no specific userId, cancel for currently stored active user and legacy prefs
+                SharedPreferences activePrefs = context.getSharedPreferences(PREFS_ACTIVE_USER, Context.MODE_PRIVATE);
+                String storedActiveUser = activePrefs.getString(KEY_ACTIVE_USER_ID, "");
+                if (!storedActiveUser.isEmpty()) {
+                    internalCancelAlarmsForUser(context, storedActiveUser);
+                    activePrefs.edit().remove(KEY_ACTIVE_USER_ID).commit();
+                }
+                cleanupLegacyGlobalPrefs(context);
+            }
+
+            Log.i(TAG, "[PauseFlow][Delivery] Cancelled native exact reminder alarms (userId=" + userId + ")");
             call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "[PauseFlow][Delivery] cancelExactReminderAlarms failed", e);
@@ -295,7 +389,14 @@ public class PauseFlowNativePlugin extends Plugin {
             long timestamp = call.getLong("timestamp", System.currentTimeMillis());
             long scheduledTimestamp = call.getLong("scheduledTimestamp", timestamp);
 
-            SharedPreferences prefs = getContext().getSharedPreferences(PREFS_DELIVERED, Context.MODE_PRIVATE);
+            if (userId == null || userId.isEmpty() || "default_user".equals(userId) || "local_user".equals(userId)) {
+                Log.w(TAG, "[PauseFlow][SECURITY] stage=ANONYMOUS_SCHEDULER_BLOCKED reason=record_delivered_unauthenticated");
+                call.reject("Cannot record delivery for unauthenticated user");
+                return;
+            }
+
+            String prefsName = getDeliveredPrefsName(userId);
+            SharedPreferences prefs = getContext().getSharedPreferences(prefsName, Context.MODE_PRIVATE);
             String existingJson = prefs.getString(KEY_DELIVERED_LIST, "[]");
             JSONArray array = new JSONArray(existingJson);
 
@@ -322,7 +423,7 @@ public class PauseFlowNativePlugin extends Plugin {
             array.put(item);
 
             prefs.edit().putString(KEY_DELIVERED_LIST, array.toString()).commit();
-            Log.i(TAG, "[PauseFlow][Delivery] recordDeliveredReminder success eventId=" + eventId);
+            Log.i(TAG, "[PauseFlow][Delivery] recordDeliveredReminder success eventId=" + eventId + " userId=" + userId);
             call.resolve();
         } catch (Exception e) {
             call.reject("Failed to record delivered reminder: " + e.getMessage());
@@ -333,7 +434,17 @@ public class PauseFlowNativePlugin extends Plugin {
     public void getDeliveredReminders(PluginCall call) {
         JSObject ret = new JSObject();
         try {
-            SharedPreferences prefs = getContext().getSharedPreferences(PREFS_DELIVERED, Context.MODE_PRIVATE);
+            String userId = call.getString("userId", "");
+            String prefsName = getDeliveredPrefsName(userId);
+            
+            if (prefsName == null) {
+                // Anonymous or empty user has zero delivered reminders
+                ret.put("deliveredReminders", new JSArray());
+                call.resolve(ret);
+                return;
+            }
+
+            SharedPreferences prefs = getContext().getSharedPreferences(prefsName, Context.MODE_PRIVATE);
             String existingJson = prefs.getString(KEY_DELIVERED_LIST, "[]");
             JSONArray array = new JSONArray(existingJson);
 
@@ -367,9 +478,13 @@ public class PauseFlowNativePlugin extends Plugin {
     @PluginMethod
     public void clearDeliveredReminders(PluginCall call) {
         try {
-            SharedPreferences prefs = getContext().getSharedPreferences(PREFS_DELIVERED, Context.MODE_PRIVATE);
-            prefs.edit().remove(KEY_DELIVERED_LIST).commit();
-            Log.i(TAG, "[PauseFlow][Delivery] clearDeliveredReminders success");
+            String userId = call.getString("userId", "");
+            String prefsName = getDeliveredPrefsName(userId);
+            if (prefsName != null) {
+                SharedPreferences prefs = getContext().getSharedPreferences(prefsName, Context.MODE_PRIVATE);
+                prefs.edit().remove(KEY_DELIVERED_LIST).commit();
+                Log.i(TAG, "[PauseFlow][Delivery] clearDeliveredReminders success for userId=" + userId);
+            }
             call.resolve();
         } catch (Exception e) {
             call.reject("Failed to clear delivered reminders: " + e.getMessage());
@@ -406,3 +521,4 @@ public class PauseFlowNativePlugin extends Plugin {
         }
     }
 }
+

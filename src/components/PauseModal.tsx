@@ -3,9 +3,10 @@ import { useApp } from '../context/AppContext';
 import { pauseService } from '../services/pauseService';
 import { Pause, Play, X, Clock, Calendar, Sliders } from 'lucide-react';
 import { Button } from './ui';
+import { formatUserTime } from '../utils/timeFormat';
 
 export const PauseModal: React.FC = () => {
-  const { activePauseModalOpen, setActivePauseModalOpen, pauseState, setPauseDuration } =
+  const { activePauseModalOpen, setActivePauseModalOpen, pauseState, setPauseDuration, generalSettings } =
     useApp();
 
   const isPaused = pauseService.isRemindersPaused(pauseState, Date.now());
@@ -68,10 +69,7 @@ export const PauseModal: React.FC = () => {
               <span>
                 Paused until{' '}
                 {pauseState.pauseUntil
-                  ? new Date(pauseState.pauseUntil).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })
+                  ? formatUserTime(new Date(pauseState.pauseUntil), generalSettings.timeFormat, generalSettings.timezone)
                   : 'later'}
               </span>
             </div>

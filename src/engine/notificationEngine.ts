@@ -568,15 +568,6 @@ export class NotificationService {
     return { success: false, error: 'Notification API unavailable' };
   }
 
-  /**
-   * Sends a test notification of specified type
-   */
-  public async sendTestNotification(type: 'water' | 'screen'): Promise<NotificationResult> {
-    if (type === 'water') {
-      return this.sendWaterNotification();
-    }
-    return this.sendScreenBreakNotification();
-  }
 
   /**
    * Diagnostic state inspector

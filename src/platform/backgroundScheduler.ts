@@ -53,12 +53,16 @@ class AndroidBackgroundScheduler implements IBackgroundSchedulerService {
     await androidScheduler.scheduleAllReminders(notifications);
   }
 
-  async syncUserSchedule(_userId: string, notifications: ScheduledNotification[]): Promise<void> {
+  async syncUserSchedule(userId: string, notifications: ScheduledNotification[]): Promise<void> {
+    if (!userId || userId === 'default_user' || userId === 'local_user') {
+      await androidScheduler.cancelAllReminders();
+      return;
+    }
     await androidScheduler.scheduleAllReminders(notifications);
   }
 
-  async cancelUserSchedule(_userId: string): Promise<void> {
-    await androidScheduler.cancelAllReminders();
+  async cancelUserSchedule(userId: string): Promise<void> {
+    await androidScheduler.cancelAllReminders(userId);
   }
 
   async cancelAllNotifications(): Promise<void> {

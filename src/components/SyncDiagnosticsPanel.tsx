@@ -1,20 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { SUPABASE_CONFIG } from '../config/supabase.config';
 import { storageEngine } from '../engine/storageEngine';
 import { realtimeSyncService } from '../services/realtimeSyncService';
 import { Activity, RefreshCw, X, Database, Radio, CheckCircle } from 'lucide-react';
+import { formatUserTime } from '../utils/timeFormat';
 
 export const SyncDiagnosticsPanel: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
   isOpen,
   onClose,
 }) => {
-  const { currentUser, waterConfig, screenBreakConfig } = useApp();
+  const { currentUser, waterConfig, screenBreakConfig, generalSettings } = useApp();
   const [loading, setLoading] = useState(false);
   const [diagData, setDiagData] = useState<{
     platform: string;
     userId: string;
-    projectHost: string;
     lastFetchAt: string;
     lastWriteAt: string;
     lastRealtimeEventAt: string;
@@ -30,18 +29,13 @@ export const SyncDiagnosticsPanel: React.FC<{ isOpen: boolean; onClose: () => vo
   } | null>(null);
 
   const refreshDiagnostics = async () => {
+    if (!currentUser?.id) return;
     setLoading(true);
     try {
-      const isDesktop =
-        typeof window !== 'undefined' &&
-        Boolean((window as any).pauseflowNative?.isDesktop || (window as any).eyeflowNative?.isDesktop);
-      const isAndroid = typeof window !== 'undefined' && Boolean((window as any).Capacitor?.isNativePlatform());
-      const platform = isDesktop ? 'Windows Desktop' : isAndroid ? 'Android Mobile' : 'Web Browser';
+      const platform = (window as any).Capacitor ? 'Android Native' : (window as any).pauseflowNative ? 'Windows Electron' : 'Web Browser';
+      const userId = currentUser.id;
 
-      const userId = currentUser?.id || 'Unauthenticated';
-      const projectHost = new URL(SUPABASE_CONFIG.url).hostname;
-
-      // Pending queue count
+      // Check pending offline queue count
       const queue = (await storageEngine.get<any[]>(`pauseflow:v2:${userId}:pending_sync_queue`, [])) || [];
 
       // Local vs Cloud states
@@ -55,10 +49,9 @@ export const SyncDiagnosticsPanel: React.FC<{ isOpen: boolean; onClose: () => vo
       setDiagData({
         platform,
         userId,
-        projectHost,
-        lastFetchAt: new Date().toLocaleTimeString(),
-        lastWriteAt: cachedWater?.updated_at ? new Date(cachedWater.updated_at).toLocaleTimeString() : 'N/A',
-        lastRealtimeEventAt: lastEvent.timestamp ? new Date(lastEvent.timestamp).toLocaleTimeString() : 'Awaiting events',
+        lastFetchAt: formatUserTime(new Date(), generalSettings.timeFormat, generalSettings.timezone),
+        lastWriteAt: cachedWater?.updated_at ? formatUserTime(new Date(cachedWater.updated_at), generalSettings.timeFormat, generalSettings.timezone) : 'N/A',
+        lastRealtimeEventAt: lastEvent.timestamp ? formatUserTime(new Date(lastEvent.timestamp), generalSettings.timeFormat, generalSettings.timezone) : 'Awaiting events',
         realtimeStatus: realtimeStatus || 'SUBSCRIBED',
         lastRealtimeTable: lastEvent.table || 'water_configurations, profiles, user_settings',
         pendingQueueCount: queue.length,
@@ -118,9 +111,9 @@ export const SyncDiagnosticsPanel: React.FC<{ isOpen: boolean; onClose: () => vo
           </div>
 
           <div className="p-3.5 rounded-2xl bg-[var(--bg-subtle)] border border-[var(--border-subtle)] space-y-1">
-            <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">Supabase Host</span>
-            <div className="font-semibold text-xs text-emerald-400 font-mono truncate">
-              {diagData?.projectHost}
+            <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">Cloud Backend</span>
+            <div className="font-semibold text-xs text-emerald-400 flex items-center gap-1.5">
+              <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> Connected
             </div>
           </div>
 

@@ -33,6 +33,44 @@ export interface EngineScheduleResult {
   nextOverallSlot: NextReminderInfo | null;
 }
 
+/**
+ * Generates a deterministic RFC4122 UUID from an arbitrary input string.
+ * Guarantees that Windows, Android, Web, and Supabase share the identical database ID.
+ */
+export function generateDeterministicUUID(input: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  let h3 = 0x9e3779b9;
+  let h4 = 0x85ebca6b;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ (ch << 5), 1597334677);
+    h3 = Math.imul(h3 ^ (ch << 11), 3812015801);
+    h4 = Math.imul(h4 ^ (ch << 17), 2718281829);
+  }
+
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h3 ^ (h3 >>> 13), 3266489909);
+  h3 = Math.imul(h3 ^ (h3 >>> 16), 2246822507) ^ Math.imul(h4 ^ (h4 >>> 13), 3266489909);
+  h4 = Math.imul(h4 ^ (h4 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+
+  const hex1 = (h1 >>> 0).toString(16).padStart(8, '0');
+  const hex2 = (h2 >>> 0).toString(16).padStart(8, '0');
+  const hex3 = (h3 >>> 0).toString(16).padStart(8, '0');
+  const hex4 = (h4 >>> 0).toString(16).padStart(8, '0');
+
+  const p1 = hex1;
+  const p2 = hex2.slice(0, 4);
+  const p3 = '5' + hex2.slice(5, 8);
+  const variantNibble = ((parseInt(hex3[0], 16) & 0x3) | 0x8).toString(16);
+  const p4 = variantNibble + hex3.slice(1, 4);
+  const p5 = hex3.slice(4, 8) + hex4;
+
+  return `${p1}-${p2}-${p3}-${p4}-${p5}`;
+}
+
 export class ReminderEngineService {
   private firedReminders: Set<string> = new Set();
 
@@ -40,8 +78,17 @@ export class ReminderEngineService {
    * Generates a deterministic unique ID for each reminder event
    * Includes type, calendar date, and scheduled time string
    */
-  public generateSlotId(type: 'water' | 'screen', dateStr: string, timeStr: string): string {
-    return `${type}:${dateStr}:${timeStr}`;
+  public generateSlotId(type: 'water' | 'screen' | 'look_outside', dateStr: string, timeStr: string): string {
+    const norm = type === 'look_outside' ? 'screen' : type;
+    return `${norm}:${dateStr}:${timeStr}`;
+  }
+
+  /**
+   * Generates a canonical occurrence ID recognized across all platforms
+   */
+  public generateCanonicalOccurrenceId(type: 'water' | 'screen' | 'look_outside', dateStr: string, timeStr: string): string {
+    const norm = type === 'screen' ? 'look_outside' : type;
+    return `${norm}:${dateStr}:${timeStr}`;
   }
 
   /**
@@ -98,6 +145,200 @@ export class ReminderEngineService {
 
     return occurrences;
   }
+
+  /**
+   * Generates a rolling multi-day schedule (e.g. today + tomorrow + day after tomorrow / 72 hours)
+   * Guarantees Android AlarmManager has future alarms registered ahead of time so overnight reminders fire
+   * without requiring the user to open the app every morning.
+   */
+  public generateRollingSchedule(
+    waterConfig: WaterConfig,
+    screenConfig: ScreenBreakConfig,
+    pauseState: PauseState,
+    userId: string,
+    daysAhead: number = 3,
+    customNow?: Date
+  ): Array<{
+    id: string;
+    category: 'water' | 'screen' | 'daily_summary';
+    title: string;
+    body: string;
+    scheduledTimestamp: number;
+    durationSeconds: number;
+    userId: string;
+  }> {
+    if (!userId || userId === 'default_user' || userId === 'local_user') {
+      return [];
+    }
+
+    const now = customNow || new Date();
+    const currentTimestamp = now.getTime();
+    const isCurrentlyPaused = pauseService.isRemindersPaused(pauseState, currentTimestamp);
+
+    if (isCurrentlyPaused) {
+      return [];
+    }
+
+    const rollingNotifications: Array<{
+      id: string;
+      category: 'water' | 'screen' | 'daily_summary';
+      title: string;
+      body: string;
+      scheduledTimestamp: number;
+      durationSeconds: number;
+      userId: string;
+    }> = [];
+
+    const waterActiveDays =
+      waterConfig.activeDays && waterConfig.activeDays.length > 0
+        ? waterConfig.activeDays
+        : [0, 1, 2, 3, 4, 5, 6];
+    const screenActiveDays =
+      screenConfig.activeDays && screenConfig.activeDays.length > 0
+        ? screenConfig.activeDays
+        : [0, 1, 2, 3, 4, 5, 6];
+
+    let quietStart = -1;
+    let quietEnd = -1;
+    if (
+      waterConfig.quietHoursEnabled &&
+      waterConfig.quietStartTime &&
+      waterConfig.quietEndTime
+    ) {
+      const [qsH, qsM] = waterConfig.quietStartTime.split(':').map(Number);
+      const [qeH, qeM] = waterConfig.quietEndTime.split(':').map(Number);
+      quietStart = qsH * 60 + qsM;
+      quietEnd = qeH * 60 + qeM;
+    }
+
+    const isQuietTime = (m: number) => {
+      if (quietStart === -1 || quietEnd === -1) return false;
+      if (quietStart <= quietEnd) {
+        return m >= quietStart && m <= quietEnd;
+      }
+      return m >= quietStart || m <= quietEnd;
+    };
+
+    for (let dayOffset = 0; dayOffset < daysAhead; dayOffset++) {
+      const targetDate = new Date(now);
+      targetDate.setDate(targetDate.getDate() + dayOffset);
+      const targetDayOfWeek = targetDate.getDay();
+      const dateStr = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(
+        2,
+        '0'
+      )}-${String(targetDate.getDate()).padStart(2, '0')}`;
+
+      // 1. Water Reminders for target day
+      if (
+        waterConfig.enabled &&
+        waterActiveDays.includes(targetDayOfWeek) &&
+        waterConfig.startTime &&
+        waterConfig.endTime
+      ) {
+        const interval = Math.max(1, waterConfig.intervalMinutes || 60);
+        const occurrences = this.generateDailyOccurrences(
+          targetDate,
+          waterConfig.startTime,
+          waterConfig.endTime,
+          interval
+        );
+
+        for (const occ of occurrences) {
+          const [h, min] = occ.timeString.split(':').map(Number);
+          const m = h * 60 + min;
+          if (isQuietTime(m)) continue;
+
+          // Strictly future occurrences (> now + 2000ms)
+          if (occ.timestamp > currentTimestamp + 2000) {
+            const slotId = this.generateSlotId('water', dateStr, occ.timeString);
+            rollingNotifications.push({
+              id: slotId,
+              category: 'water',
+              title: '💧 Time for water',
+              body: 'Take a 2-minute water break.',
+              scheduledTimestamp: occ.timestamp,
+              durationSeconds: (waterConfig.durationMinutes || 2) * 60,
+              userId,
+            });
+          }
+        }
+      }
+
+      // 2. Look Outside Screen Breaks for target day
+      if (
+        screenConfig.enabled &&
+        screenActiveDays.includes(targetDayOfWeek) &&
+        screenConfig.startTime &&
+        screenConfig.endTime
+      ) {
+        const interval = Math.max(1, screenConfig.screenIntervalMinutes || 30);
+        const breakDuration = screenConfig.breakDurationMinutes || 5;
+        const occurrences = this.generateDailyOccurrences(
+          targetDate,
+          screenConfig.startTime,
+          screenConfig.endTime,
+          interval
+        );
+
+        for (const occ of occurrences) {
+          // Strictly future occurrences (> now + 2000ms)
+          if (occ.timestamp > currentTimestamp + 2000) {
+            const slotId = this.generateSlotId('screen', dateStr, occ.timeString);
+            rollingNotifications.push({
+              id: slotId,
+              category: 'screen',
+              title: '👁 Look outside',
+              body: 'Give your eyes a short break from the screen.',
+              scheduledTimestamp: occ.timestamp,
+              durationSeconds: breakDuration * 60,
+              userId,
+            });
+          }
+        }
+      }
+
+      // 3. Daily Summary Alarm for target day (fires at the end of the day's active schedule)
+      const isWaterActiveOnDay = waterConfig.enabled && waterActiveDays.includes(targetDayOfWeek);
+      const isScreenActiveOnDay = screenConfig.enabled && screenActiveDays.includes(targetDayOfWeek);
+
+      if (isWaterActiveOnDay || isScreenActiveOnDay) {
+        const [wH, wM] = (waterConfig.endTime || '18:00').split(':').map(Number);
+        const [sH, sM] = (screenConfig.endTime || '18:00').split(':').map(Number);
+
+        let targetSummaryMinutes = 18 * 60;
+        if (isWaterActiveOnDay && isScreenActiveOnDay) {
+          const wMinutes = (isNaN(wH) ? 18 : wH) * 60 + (isNaN(wM) ? 0 : wM);
+          const sMinutes = (isNaN(sH) ? 18 : sH) * 60 + (isNaN(sM) ? 0 : sM);
+          targetSummaryMinutes = Math.max(wMinutes, sMinutes);
+        } else if (isWaterActiveOnDay) {
+          targetSummaryMinutes = (isNaN(wH) ? 18 : wH) * 60 + (isNaN(wM) ? 0 : wM);
+        } else {
+          targetSummaryMinutes = (isNaN(sH) ? 18 : sH) * 60 + (isNaN(sM) ? 0 : sM);
+        }
+
+        const summaryDate = new Date(targetDate);
+        summaryDate.setHours(Math.floor(targetSummaryMinutes / 60), targetSummaryMinutes % 60, 0, 0);
+
+        if (summaryDate.getTime() > currentTimestamp + 2000) {
+          const summarySlotId = `daily_summary:${dateStr}`;
+          rollingNotifications.push({
+            id: summarySlotId,
+            category: 'daily_summary',
+            title: "Today's Progress",
+            body: "Today's Progress",
+            scheduledTimestamp: summaryDate.getTime(),
+            durationSeconds: 0,
+            userId,
+          });
+        }
+      }
+    }
+
+    // Sort all rolling notifications chronologically
+    rollingNotifications.sort((a, b) => a.scheduledTimestamp - b.scheduledTimestamp);
+    return rollingNotifications;
+  }
+
 
   /**
    * Dynamically calculates the next upcoming occurrence based on device clock (Date.now())

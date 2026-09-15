@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Droplets, Eye, Wind } from 'lucide-react';
 import { notificationService } from '../platform';
-import { reminderService } from '../services/reminderService';
-import { authService } from '../services/authService';
 
 const getDesktopBridge = () =>
   typeof window !== 'undefined'
@@ -65,21 +63,8 @@ export const StandaloneReminder: React.FC = () => {
       notificationService.playScreenBell();
     }
 
-    // Direct event recording in reminderService for 100% data reliability
-    if (!item.isPreview) {
-      try {
-        const user = await authService.getCurrentUser();
-        const userId = user?.id || '';
-        if (userId) {
-          const cat = item.type === 'screen' ? 'look_outside' : item.type;
-          await reminderService.recordCompleted(userId, cat, item.slotId, item.scheduledAt);
-        }
-      } catch (err) {
-        console.warn('[StandaloneReminder] Event persistence error:', err);
-      }
-    }
-
-    // Complete reminder in native main process immediately
+    // Presentation-only completion: plays chime and requests desktop bridge to release overlay
+    // Authoritative database completion is strictly reserved for Android native notification delivery.
     const desktopBridge = getDesktopBridge();
     if (desktopBridge?.completeReminderItem) {
       desktopBridge.completeReminderItem(

@@ -8,6 +8,7 @@ import { syncService } from '../services/syncService';
 import { pauseService } from '../services/pauseService';
 import { Card, Button, Toggle, Badge, BrandLogo, useToast } from './ui';
 import { SyncDiagnosticsPanel } from './SyncDiagnosticsPanel';
+import { formatUserTime } from '../utils/timeFormat';
 import {
   Settings,
   Bell,
@@ -18,7 +19,6 @@ import {
   Pause,
   Play,
   Shield,
-  Download,
   Info,
   AlertTriangle,
   Activity,
@@ -79,8 +79,6 @@ export const SettingsPage: React.FC = () => {
     setNotificationSettings,
     pauseState,
     setPauseDuration,
-    waterConfig,
-    screenBreakConfig,
     currentDeviceTimestamp,
     logout,
   } = useApp();
@@ -96,7 +94,7 @@ export const SettingsPage: React.FC = () => {
   const [diagnostics, setDiagnostics] = useState<NotificationDiagnostics | null>(null);
   const [androidDiag, setAndroidDiag] = useState<AndroidSchedulerDiagnostics | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSyncTime, setLastSyncTime] = useState<string>(new Date().toLocaleTimeString());
+  const [lastSyncTime, setLastSyncTime] = useState<string>(() => formatUserTime(new Date(), generalSettings.timeFormat, generalSettings.timezone));
 
   // Custom Pause state
   const [customPauseMins, setCustomPauseMins] = useState<number>(45);
@@ -176,7 +174,7 @@ export const SettingsPage: React.FC = () => {
     try {
       const res = await syncService.syncUserAccount(currentUser?.id || 'guest');
       if (res.success) {
-        setLastSyncTime(new Date().toLocaleTimeString());
+        setLastSyncTime(formatUserTime(new Date(), generalSettings.timeFormat, generalSettings.timezone));
         showToast('Settings & reminder schedules synchronized with cloud ✓', 'success');
       } else {
         showToast(`Sync notice: ${res.error || 'Check network connection'}`, 'info');
@@ -188,26 +186,7 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
-  // JSON Data Backup
-  const exportDataJSON = () => {
-    const data = {
-      userId: currentUser?.id,
-      userEmail: currentUser?.email,
-      generalSettings,
-      notificationSettings,
-      waterConfig,
-      screenBreakConfig,
-      pauseState,
-      exportedAt: new Date().toISOString(),
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `pauseflow_settings_${currentUser?.id || 'guest'}_${Date.now()}.json`;
-    a.click();
-    showToast('User settings exported successfully!', 'success');
-  };
+
 
   // Delete Account
   const handleDeleteAccount = async (e: React.FormEvent) => {
@@ -656,10 +635,7 @@ export const SettingsPage: React.FC = () => {
                     <span>
                       Reminders paused until{' '}
                       {pauseState.pauseUntil
-                        ? new Date(pauseState.pauseUntil).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })
+                        ? formatUserTime(new Date(pauseState.pauseUntil), generalSettings.timeFormat, generalSettings.timezone)
                         : 'later'}
                     </span>
                   </div>
@@ -815,25 +791,6 @@ export const SettingsPage: React.FC = () => {
                     {isSyncing ? 'Syncing...' : 'Sync Now'}
                   </Button>
                 </div>
-
-                <div className="pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between">
-                  <div>
-                    <span className="text-xs font-semibold text-[var(--text-primary)] block">
-                      Download Settings Backup
-                    </span>
-                    <span className="text-[11px] text-[var(--text-muted)]">
-                      Export all user preferences and logs as JSON
-                    </span>
-                  </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={exportDataJSON}
-                    leftIcon={<Download className="w-3.5 h-3.5" />}
-                  >
-                    Export JSON
-                  </Button>
-                </div>
               </div>
 
               {/* 3. Danger Zone: Delete Account */}
@@ -946,12 +903,17 @@ export const SettingsPage: React.FC = () => {
                   <span className="font-bold text-emerald-400">Connected ✓</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-[var(--text-muted)]">Cloud Source of Truth:</span>
-                  <span className="font-mono text-sky-400">hwrsvdrhqenraeuqfqle.supabase.co</span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
                   <span className="text-[var(--text-muted)]">Account ID:</span>
-                  <span className="font-mono text-[var(--text-primary)] truncate max-w-[200px]">{currentUser?.id || 'Anonymous'}</span>
+                  <span
+                    className="font-mono text-[var(--text-primary)] truncate max-w-[220px]"
+                    title={currentUser?.id && currentUser.id !== 'default_user' && currentUser.id !== 'local_user' ? currentUser.id : undefined}
+                  >
+                    {currentUser?.id && currentUser.id !== 'default_user' && currentUser.id !== 'local_user'
+                      ? currentUser.id.length > 29
+                        ? `${currentUser.id.slice(0, 29)}...`
+                        : currentUser.id
+                      : 'Not signed in'}
+                  </span>
                 </div>
               </div>
 

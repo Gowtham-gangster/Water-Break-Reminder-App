@@ -3,11 +3,11 @@ import { useApp } from '../context/AppContext';
 import { Card, Button, Toggle, TimePicker, Input, useToast } from './ui';
 import {
   Droplets,
-  Bell,
   Save,
   AlertCircle,
   Calendar,
 } from 'lucide-react';
+import { formatUserTime } from '../utils/timeFormat';
 import { calculateAuthoritativeExpected, isScheduleWindowActive } from '../services/reminderService';
 
 const DAYS_OF_WEEK = [
@@ -26,7 +26,7 @@ export const WaterPage: React.FC = () => {
     setWaterConfig,
     nextWaterSlot,
     waterCompletedCount,
-    startPreview,
+    generalSettings,
   } = useApp();
 
   const { showToast } = useToast();
@@ -158,36 +158,25 @@ export const WaterPage: React.FC = () => {
 
       {/* 2. Next Water Reminder Card */}
       <Card variant="water" padding="md" className="space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--water-primary)] flex items-center gap-1.5">
-              <Droplets className="w-3.5 h-3.5" /> Next Water Reminder
+        <div className="space-y-1">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--water-primary)] flex items-center gap-1.5">
+            <Droplets className="w-3.5 h-3.5" /> Next Water Reminder
+          </span>
+          <div className="flex items-baseline gap-2">
+            <span className="text-3xl sm:text-4xl font-black text-[var(--text-primary)] font-mono">
+              {formData.enabled && nextWaterSlot ? formatUserTime(nextWaterSlot.time, generalSettings.timeFormat, generalSettings.timezone) : 'Paused'}
             </span>
-            <div className="flex items-baseline gap-2">
-              <span className="text-3xl sm:text-4xl font-black text-[var(--text-primary)] font-mono">
-                {formData.enabled && nextWaterSlot ? nextWaterSlot.time : 'Paused'}
+            {formData.enabled && nextWaterSlot && (
+              <span className="text-xs font-semibold text-[var(--water-primary)]">
+                ({timeRemaining})
               </span>
-              {formData.enabled && nextWaterSlot && (
-                <span className="text-xs font-semibold text-[var(--water-primary)]">
-                  ({timeRemaining})
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-[var(--text-secondary)]">
-              {isScheduleActive
-                ? `${waterCompletedCount} / ${expectedCount} reminders completed today.`
-                : `${waterCompletedCount} completed · ${missedCount} missed today.`}
-            </p>
+            )}
           </div>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => startPreview('water')}
-            leftIcon={<Bell className="w-3.5 h-3.5 text-[var(--water-primary)]" />}
-          >
-            Send test reminder
-          </Button>
+          <p className="text-xs text-[var(--text-secondary)]">
+            {isScheduleActive
+              ? `${waterCompletedCount} / ${expectedCount} reminders completed today.`
+              : `${waterCompletedCount} completed · ${missedCount} missed today.`}
+          </p>
         </div>
       </Card>
 
@@ -266,6 +255,7 @@ export const WaterPage: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           <TimePicker
             label="Start time"
+            timeFormat={generalSettings.timeFormat}
             value={formData.startTime}
             onChange={(e) => setFormData({ ...formData, startTime: e.target.value })}
             helperText="Arbitrary start time (e.g. 08:13, 09:47, 13:26)."
@@ -273,6 +263,7 @@ export const WaterPage: React.FC = () => {
 
           <TimePicker
             label="End time"
+            timeFormat={generalSettings.timeFormat}
             value={formData.endTime}
             onChange={(e) => setFormData({ ...formData, endTime: e.target.value })}
             helperText="Arbitrary end time (e.g. 17:53, 22:11)."

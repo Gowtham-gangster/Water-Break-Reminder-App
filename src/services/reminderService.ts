@@ -5,6 +5,7 @@ import { supabase } from './supabaseClient.ts';
 import { authService } from './authService.ts';
 import { performanceDiagnostics } from './performanceDiagnostics.ts';
 import { developmentDiagnostics } from './developmentDiagnostics.ts';
+import { generateDeterministicUUID } from '../engine/reminderEngine.ts';
 import type { ReminderEventEntity, WaterConfig, ScreenBreakConfig } from '../types/index.ts';
 
 export type ReminderEventType = 'water' | 'look_outside';
@@ -91,17 +92,6 @@ export interface HistoryQueryOptions {
   limit?: number;
 }
 
-// Helper to generate RFC4122 v4 UUID
-function generateUUID(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
 
 /**
  * Get user's local date string (YYYY-MM-DD) formatted according to the given or detected timezone
@@ -381,9 +371,6 @@ class ReminderService {
     return `pauseflow:v2:${userId}:offline_reminder_events`;
   }
 
-  private getSlotUUIDMapKey(userId: string): string {
-    return `pauseflow:v2:${userId}:slot_uuid_map`;
-  }
 
   private memoryStore: Map<string, string> = new Map();
 
@@ -446,32 +433,12 @@ class ReminderService {
   }
 
   /**
-   * Deterministic UUID mapping per reminder occurrence
+   * Deterministic UUID mapping per reminder occurrence across all devices
    */
   public getOrCreateEventId(userId: string, type: string, slotKey: string | number): string {
-    const mapKey = this.getSlotUUIDMapKey(userId);
-    let map: Record<string, string> = {};
-    try {
-      const raw = this.getStorageItem(mapKey);
-      if (raw) map = JSON.parse(raw);
-    } catch (_) {}
-
-    const key = `${type}:${slotKey}`;
-    if (map[key]) {
-      return map[key];
-    }
-
-    const newUUID = generateUUID();
-    map[key] = newUUID;
-    try {
-      const keys = Object.keys(map);
-      if (keys.length > 500) {
-        delete map[keys[0]];
-      }
-      this.setStorageItem(mapKey, JSON.stringify(map));
-    } catch (_) {}
-
-    return newUUID;
+    const normType = type === 'screen' ? 'look_outside' : type;
+    const cleanSlotKey = String(slotKey);
+    return generateDeterministicUUID(`${userId}:${normType}:${cleanSlotKey}`);
   }
 
   /**

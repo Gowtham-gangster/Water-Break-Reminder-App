@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { Card, Badge, ProgressBar } from './ui';
 import { reminderService } from '../services/reminderService';
+import { formatUserTime } from '../utils/timeFormat';
 import {
   Droplets,
   Eye,
@@ -301,7 +302,7 @@ export const Dashboard: React.FC = () => {
                   <div className="space-y-1.5">
                     <div className="flex items-baseline gap-3">
                       <span className="text-3xl sm:text-4xl font-extrabold text-[var(--text-primary)] font-mono tracking-tight">
-                        {nextWaterSlot.time}
+                        {formatUserTime(nextWaterSlot.time, generalSettings.timeFormat, generalSettings.timezone)}
                       </span>
                       <span className="text-xs font-bold text-[var(--water-primary)] px-2 py-0.5 rounded-md bg-[var(--water-subtle)]">
                         {waterCountdown}
@@ -427,7 +428,7 @@ export const Dashboard: React.FC = () => {
                   <div className="space-y-1.5">
                     <div className="flex items-baseline gap-3">
                       <span className="text-3xl sm:text-4xl font-extrabold text-[var(--text-primary)] font-mono tracking-tight">
-                        {nextScreenSlot.time}
+                        {formatUserTime(nextScreenSlot.time, generalSettings.timeFormat, generalSettings.timezone)}
                       </span>
                       <span className="text-xs font-bold text-[var(--screen-primary)] px-2 py-0.5 rounded-md bg-[var(--screen-subtle)]">
                         {screenCountdown}
@@ -612,7 +613,7 @@ export const Dashboard: React.FC = () => {
                 <div className="flex items-center gap-3">
                   <span className="font-mono text-[var(--text-muted)] text-[11px] flex items-center gap-1">
                     <Clock className="w-3 h-3" />
-                    {evt.time}
+                    {formatUserTime(evt.time, generalSettings.timeFormat, generalSettings.timezone)}
                   </span>
                   <div className="flex items-center gap-2">
                     {evt.type === 'water' ? (

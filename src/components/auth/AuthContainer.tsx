@@ -13,7 +13,6 @@ import {
   RefreshCw,
   EyeOff,
   ChevronLeft,
-  Check,
 } from 'lucide-react';
 import { authService, type UserProfile } from '../../services/authService';
 import { BrandLogo } from '../ui';
@@ -24,8 +23,24 @@ export type AuthScreen =
   | 'signup'
   | 'forgot_password'
   | 'reset_password'
-  | 'email_verification'
+  | 'check_email'
   | 'session_loading';
+
+// Session-storage key for safely carrying the signup email to the login screen.
+// Only email is stored — never the password.
+const PENDING_CONFIRM_EMAIL_KEY = 'pauseflow:pending_confirm_email';
+
+const savePendingConfirmEmail = (e: string) => {
+  try { sessionStorage.setItem(PENDING_CONFIRM_EMAIL_KEY, e); } catch (_) {}
+};
+
+const readAndClearPendingConfirmEmail = (): string => {
+  try {
+    const val = sessionStorage.getItem(PENDING_CONFIRM_EMAIL_KEY) || '';
+    sessionStorage.removeItem(PENDING_CONFIRM_EMAIL_KEY);
+    return val;
+  } catch (_) { return ''; }
+};
 
 interface AuthContainerProps {
   initialScreen?: AuthScreen;
@@ -44,7 +59,6 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [resetToken, setResetToken] = useState('');
-  const [verificationCode, setVerificationCode] = useState('');
 
   // UI state
   const [showPassword, setShowPassword] = useState(false);
@@ -54,6 +68,7 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [rateLimitCountdown, setRateLimitCountdown] = useState(0);
+  const [resendCooldown, setResendCooldown] = useState(0);
 
   // Synchronous submission lock to prevent concurrent double-click requests
   const isSubmittingRef = React.useRef(false);
@@ -76,6 +91,19 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
       if (timer) clearInterval(timer);
     };
   }, [isRateLimited, rateLimitCountdown]);
+
+  // Cooldown timer for email resend requests
+  React.useEffect(() => {
+    let timer: any;
+    if (resendCooldown > 0) {
+      timer = setInterval(() => {
+        setResendCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [resendCooldown]);
 
   // Password Strength Calculation
   const passwordStrength = useMemo(() => {
@@ -101,6 +129,18 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
     setErrorMsg(null);
     setSuccessMsg(null);
   };
+
+  // Pre-fill email from sessionStorage when the login screen mounts after signup confirmation
+  React.useEffect(() => {
+    if (screen === 'login') {
+      const savedEmail = readAndClearPendingConfirmEmail();
+      if (savedEmail) {
+        setEmail(savedEmail);
+        setSuccessMsg('Your account is confirmed — enter your password to log in.');
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen]);
 
   // 1. Handle Login
   const handleLogin = async (e: React.FormEvent) => {
@@ -199,8 +239,9 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
       }
 
       if (res.requiresEmailConfirmation) {
-        setSuccessMsg('Account registered! Please check your email inbox to confirm your account before logging in.');
-        setScreen('login');
+        // Save only the email (never the password) for pre-filling the login screen later
+        savePendingConfirmEmail(email.trim().toLowerCase());
+        setScreen('check_email');
       } else if (res.user) {
         onAuthenticated(res.user);
       }
@@ -295,22 +336,21 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
   };
 
   // 5. Handle Email Verification Code
-  const handleVerifyEmail = async (e: React.FormEvent) => {
-    e.preventDefault();
-    clearMessages();
-    setSuccessMsg('If your email requires confirmation, please check your inbox for the link.');
-    setScreen('login');
-  };
-
   const handleResendVerification = async () => {
+    if (resendCooldown > 0 || loading) return;
     clearMessages();
     setLoading(true);
     try {
       const res = await authService.sendVerification(email.trim());
       if (res.error) {
+        if (res.isRateLimited) {
+          setIsRateLimited(true);
+          setRateLimitCountdown(60);
+        }
         setErrorMsg(res.error);
       } else {
-        setSuccessMsg('A new verification code has been dispatched to your email.');
+        setSuccessMsg('A new confirmation email has been dispatched to your email address.');
+        setResendCooldown(60);
       }
     } catch (err: any) {
       console.error('[PauseFlow Resend Verification Exception]', err);
@@ -318,7 +358,7 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
       setErrorMsg(
         isOffline
           ? 'Unable to connect right now. Please check your Internet connection and try again.'
-          : 'Could not resend verification code. Please try again.'
+          : 'Could not resend confirmation email. Please try again.'
       );
     } finally {
       setLoading(false);
@@ -473,7 +513,7 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
           type="button"
           onClick={() => {
             clearMessages();
-            if (screen === 'reset_password' || screen === 'forgot_password' || screen === 'email_verification') {
+            if (screen === 'reset_password' || screen === 'forgot_password' || screen === 'check_email') {
               setScreen('login');
             } else {
               setScreen('welcome');
@@ -797,7 +837,7 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
                   <span>Creating account...</span>
                 </>
               ) : isRateLimited ? (
-                <span>Rate limited (Wait {rateLimitCountdown}s)</span>
+                <span>Please wait ({rateLimitCountdown}s)</span>
               ) : (
                 <>
                   <span>Create your account</span>
@@ -1002,82 +1042,88 @@ export const AuthContainer: React.FC<AuthContainerProps> = ({
         )}
 
         {/* ==========================================
-            VIEW: EMAIL VERIFICATION STATE
+            VIEW: CHECK EMAIL (Post-Signup Confirmation Notice)
         ========================================== */}
-        {screen === 'email_verification' && (
-          <form onSubmit={handleVerifyEmail} className="space-y-4">
-            <div className="text-center space-y-2">
-              <div className="w-12 h-12 rounded-2xl bg-sky-500/15 text-sky-400 flex items-center justify-center mx-auto">
-                <Mail className="w-6 h-6" />
+        {screen === 'check_email' && (
+          <div className="space-y-5">
+            {/* Icon + Heading */}
+            <div className="text-center space-y-3">
+              <div className="w-16 h-16 rounded-2xl bg-sky-500/15 text-sky-400 flex items-center justify-center mx-auto shadow-lg shadow-sky-500/10">
+                <Mail className="w-8 h-8" />
               </div>
-              <h2 className="text-2xl font-bold text-white tracking-tight">
-                Verify your email
-              </h2>
-              <p className="text-xs text-slate-400">
-                We've sent a 6-digit confirmation code to{' '}
-                <strong className="text-slate-200">{email || 'your email'}</strong>.
-              </p>
-            </div>
-
-            <div className="space-y-3 pt-2">
-              <div className="space-y-1.5 text-center">
-                <label className="text-xs font-semibold text-slate-300">Enter 6-digit code</label>
-                <input
-                  type="text"
-                  maxLength={6}
-                  value={verificationCode}
-                  onChange={(e) => setVerificationCode(e.target.value.trim())}
-                  placeholder="123456"
-                  className="w-full h-[52px] rounded-xl bg-[#17202d]/90 border border-slate-700/60 focus:border-sky-400 text-center text-xl tracking-widest font-mono font-bold text-slate-100 outline-none transition-all duration-150 focus:ring-2 focus:ring-sky-400/20"
-                  required
-                />
+              <div className="space-y-1.5">
+                <h2 className="text-2xl sm:text-[26px] font-extrabold text-white tracking-tight">
+                  Check your email 📧
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
+                  We've sent a confirmation link to{' '}
+                  <strong className="text-sky-300 break-all">{email || 'your email address'}</strong>.
+                  <br />
+                  Please confirm your email to continue.
+                </p>
               </div>
             </div>
 
+            {/* Steps */}
+            <div className="bg-slate-800/40 border border-slate-700/40 rounded-xl p-4 space-y-2.5">
+              {[
+                { num: '1', text: 'Open your email inbox' },
+                { num: '2', text: 'Find the email from PauseFlow' },
+                { num: '3', text: 'Click "Confirm My Email"' },
+                { num: '4', text: 'Return here and log in' },
+              ].map(({ num, text }) => (
+                <div key={num} className="flex items-center gap-3 text-xs text-slate-300">
+                  <span className="w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-[10px] font-bold shrink-0">
+                    {num}
+                  </span>
+                  <span>{text}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Spam note */}
+            <p className="text-[11px] text-slate-500 text-center leading-relaxed">
+              Didn't receive it? Check your spam folder.{' '}
+              <br className="sm:hidden" />
+              The email may take a minute to arrive.
+            </p>
+
+            {/* Resend Button */}
             <button
-              type="submit"
-              disabled={loading}
-              className="w-full h-[52px] sm:h-[54px] rounded-xl bg-gradient-to-r from-sky-500 via-sky-400 to-teal-400 hover:from-sky-400 hover:to-teal-300 text-slate-950 font-bold text-[15px] flex items-center justify-center gap-2 shadow-lg shadow-sky-500/25 hover:shadow-sky-500/40 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99] transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60 disabled:cursor-not-allowed group mt-2"
+              type="button"
+              onClick={handleResendVerification}
+              disabled={loading || resendCooldown > 0}
+              className="w-full h-[48px] rounded-xl bg-slate-800/60 hover:bg-slate-700/60 border border-slate-700/60 hover:border-slate-600 text-slate-300 hover:text-white font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? (
                 <>
-                  <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
-                  <span>Verifying...</span>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Sending...</span>
                 </>
+              ) : resendCooldown > 0 ? (
+                <span>Resend confirmation email ({resendCooldown}s)</span>
               ) : (
                 <>
-                  <Check className="w-4 h-4 text-slate-950" />
-                  <span>Verify code</span>
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Resend confirmation email</span>
                 </>
               )}
             </button>
 
-            <div className="flex flex-col gap-2 text-center pt-3 border-t border-slate-800/80">
+            {/* Back to login */}
+            <div className="text-center pt-1 border-t border-slate-800/80">
               <button
                 type="button"
-                onClick={handleResendVerification}
-                disabled={loading}
-                className="text-xs text-sky-400 font-semibold hover:text-sky-300 hover:underline cursor-pointer"
-              >
-                Didn't receive a code? Resend code
-              </button>
-
-              <button
-                type="button"
-                onClick={async () => {
-                  const activeUser = await authService.getActiveUser();
-                  if (activeUser) {
-                    onAuthenticated(activeUser);
-                  } else {
-                    setScreen('login');
-                  }
+                onClick={() => {
+                  clearMessages();
+                  setScreen('login');
                 }}
-                className="text-xs text-slate-400 hover:text-white cursor-pointer transition-colors"
+                className="text-xs text-sky-400 font-semibold hover:text-sky-300 hover:underline cursor-pointer transition-colors"
               >
-                Skip / Continue to Dashboard
+                Back to Log in
               </button>
             </div>
-          </form>
+          </div>
         )}
       </div>
 
